@@ -1,7 +1,7 @@
 from enum import Enum
 from functools import lru_cache
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import Field, model_validator
 
 
 class AppMode(str, Enum):
@@ -29,17 +29,13 @@ class Settings(BaseSettings):
 
     # ── Storage ───────────────────────────────────────────────────────
     storage_path: str = "data/meetings"
-    database_url: str = ""
     mongo_uri: str = "mongodb://mongo:27017/meetagent"
     mongo_db: str = "meetagent"
     audio_storage_path: str = "data/audio"
-    s3_bucket: str = ""
 
     # ── Cache e API ───────────────────────────────────────────────────
     redis_url: str = "redis://localhost:6379/0"
-    api_host: str = "0.0.0.0"
     api_port: int = 8000
-    secret_key: str = "dev-secret-change-in-prod"
     allowed_origins: list[str] = Field(default=["http://localhost:8501"])
 
     # ── Áudio ─────────────────────────────────────────────────────────
@@ -49,9 +45,6 @@ class Settings(BaseSettings):
     use_real_diarization: bool = False
     huggingface_token: str = ""
     diarization_device: str = "cpu"
-
-    # ── Reunião ───────────────────────────────────────────────────────
-    default_meeting_type: str = "general"
 
     # ── Google Calendar ───────────────────────────────────────────────
     google_credentials_path: str = "credentials.json"
@@ -70,11 +63,6 @@ class Settings(BaseSettings):
     openrouter_model: str = "openai/gpt-4o"
     openrouter_site_url: str = ""
     openrouter_site_name: str = "Meet Agent"
-
-    # ── faster-whisper ────────────────────────────────────────────────
-    faster_whisper_model: str = "large-v3"
-    faster_whisper_device: str = "auto"
-    faster_whisper_compute_type: str = "int8"
 
     # ── Bot de reunião ────────────────────────────────────────────────
     bot_chrome_profile: str = "./bot_chrome_profile"
@@ -109,6 +97,26 @@ class Settings(BaseSettings):
     @property
     def use_local_whisper(self) -> bool:
         return self.whisper_transcriber == "local"
+
+    @model_validator(mode="after")
+    def _validate_collab(self) -> "Settings":
+        """Em produção (collab), falha na partida em vez de falhar no meio de uma reunião."""
+        if not self.is_collab:
+            return self
+        missing = []
+        if not self.mongo_uri:
+            missing.append("MONGO_URI")
+        if not self.redis_url:
+            missing.append("REDIS_URL")
+        if not self.use_local_whisper and not self.openai_api_key:
+            missing.append("OPENAI_API_KEY (ou WHISPER_TRANSCRIBER=local)")
+        if self.llm_provider == "openai" and not self.openai_api_key:
+            missing.append("OPENAI_API_KEY (LLM_PROVIDER=openai)")
+        if self.llm_provider == "openrouter" and not self.openrouter_api_key:
+            missing.append("OPENROUTER_API_KEY")
+        if missing:
+            raise ValueError("APP_MODE=collab exige no .env: " + ", ".join(dict.fromkeys(missing)))
+        return self
 
     model_config = {
         "env_file": ".env",

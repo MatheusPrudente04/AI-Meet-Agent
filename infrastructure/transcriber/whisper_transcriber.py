@@ -14,7 +14,7 @@ from typing import Optional
 import numpy as np
 
 from domain.entities.transcript import Transcript, Segment
-from interface.transcriber import ITranscriber, TranscriptionError
+from domain.interfaces.transcriber import ITranscriber, TranscriptionError
 from config.settings import get_settings
 from infrastructure.transcriber.audio_preprocessor import preprocess_audio
 from infrastructure.transcriber.transcript_quality_filter import filter_segments
@@ -174,7 +174,6 @@ class WhisperLocalTranscriber(ITranscriber):
 
         self._model_name = model_name or settings.whisper_local_model
         self._language = language or settings.whisper_language or None
-        self._max_size_bytes = settings.max_audio_size_mb * 1024 * 1024
 
         if device and compute_type:
             self._device = device
@@ -313,14 +312,6 @@ class WhisperLocalTranscriber(ITranscriber):
             raise TranscriptionError(
                 f"Formato '{path.suffix}' não suportado. "
                 f"Use: {', '.join(self.SUPPORTED_FORMATS)}"
-            )
-
-        file_size = path.stat().st_size
-        if file_size > self._max_size_bytes:
-            size_mb = file_size / 1024 / 1024
-            raise TranscriptionError(
-                f"Arquivo muito grande: {size_mb:.1f}MB. "
-                f"Máximo configurado: {self._max_size_bytes // 1024 // 1024}MB."
             )
 
     def _apply_pseudo_diarization(self, segments: list[dict]) -> list[dict]:

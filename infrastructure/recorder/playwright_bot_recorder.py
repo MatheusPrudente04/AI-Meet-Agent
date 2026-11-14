@@ -57,8 +57,6 @@ class BotSession:
     id: str
     meeting_url: str
     audio_path: Optional[Path] = None
-    caption_path: Optional[Path] = None
-    speaker_log_path: Optional[Path] = None
 
 
 class PlaywrightBotRecorder:
@@ -167,11 +165,7 @@ class PlaywrightBotRecorder:
             )
 
         if self._on_audio_ready and self.session.audio_path:
-            await self._on_audio_ready(
-                self.session.audio_path,
-                self.session.speaker_log_path,
-                self.session.caption_path,
-            )
+            await self._on_audio_ready(self.session.audio_path)
 
         return self.session
 

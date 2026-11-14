@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from interface.transcriber import TranscriptionError
+from domain.interfaces.transcriber import TranscriptionError
 
 
 @dataclass

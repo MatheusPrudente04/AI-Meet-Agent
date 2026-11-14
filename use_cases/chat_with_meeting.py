@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from domain.entities.meeting import Meeting, Task
-from interface.llm_services import ILLMService, LLMServiceError
+from domain.interfaces.llm_service import ILLMService, LLMServiceError
 
 
 @dataclass

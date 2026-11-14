@@ -13,9 +13,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from domain.entities.transcript import Transcript, Segment
 from domain.entities.meeting import Meeting, Summary, Task, Decision
-from interface.transcriber import ITranscriber, TranscriptionError
-from interface.llm_services import ILLMService, LLMServiceError
-from repositories.meeting_repository import IMeetingRepository
+from domain.interfaces.transcriber import ITranscriber, TranscriptionError
+from domain.interfaces.llm_service import ILLMService, LLMServiceError
+from domain.interfaces.meeting_repository import IMeetingRepository
 
 
 @pytest.fixture

@@ -1,6 +1,17 @@
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import Optional
+
+
+class MeetingStatus(str, Enum):
+    """Etapa do processamento. Única fonte de status do sistema."""
+    PENDING = "pending"
+    RECORDING = "recording"
+    TRANSCRIBING = "transcribing"
+    SUMMARIZING = "summarizing"
+    DONE = "done"
+    ERROR = "error"
 
 
 @dataclass
@@ -78,9 +89,8 @@ class Meeting:
     participants: list[str] = field(default_factory=list)
     duration_minutes: float = 0.0
     transcript_raw: str = ""
-    participant_info: dict[str, str] = field(default_factory=dict)
-    speaker_observations: list[dict] = field(default_factory=list)
-    speech_blocks: list = field(default_factory=list)
+    status: MeetingStatus = MeetingStatus.PENDING
+    error: str = ""
 
     @property
     def is_transcribed(self) -> bool:

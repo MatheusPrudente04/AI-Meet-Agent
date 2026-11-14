@@ -15,14 +15,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
     curl \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && find /var/lib/apt/lists -mindepth 1 -delete
 
 # ── Diretório de trabalho ─────────────────────────────────────────────────
 WORKDIR /app
 
 # ── Dependências Python ───────────────────────────────────────────────────
-COPY requirements.txt requirements-collab.txt ./
-RUN pip install --no-cache-dir -r requirements.txt -r requirements-collab.txt
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 RUN playwright install chromium
 # ── Código da aplicação ───────────────────────────────────────────────────
 COPY . .

@@ -1,20 +1,17 @@
 from fastapi import APIRouter, HTTPException
 
-# FIX: era `from api.meeting import ...` — arquivo não existe.
-# FIX: ChatRequest e ChatResponse não estavam importados, causando NameError
-#      no response_model= e no type hint do body.
 from api.schemas.meeting import ChatRequest, ChatResponse
-from use_cases.chat_with_meeting import ChatWithMeetingInput
 from presentation.container import get_container
+from use_cases.chat_with_meeting import ChatWithMeetingInput
 
 router = APIRouter()
 
 
 @router.post("/{meeting_id}/chat", response_model=ChatResponse)
-async def chat(meeting_id: str, body: ChatRequest):
+def chat(meeting_id: str, body: ChatRequest):
     """Responde pergunta sobre a reunião. Histórico gerenciado pelo cliente."""
     container = get_container()
-    meeting = await container.repository.find_by_id_async(meeting_id)
+    meeting = container.repository.find_by_id(meeting_id)
 
     if not meeting:
         raise HTTPException(404, "Reunião não encontrada")
@@ -22,17 +19,9 @@ async def chat(meeting_id: str, body: ChatRequest):
         raise HTTPException(422, "Reunião ainda não foi transcrita")
 
     result = container.chat_with_meeting.execute(
-        ChatWithMeetingInput(
-            meeting=meeting,
-            question=body.question,
-            history=body.history,
-        )
+        ChatWithMeetingInput(meeting=meeting, question=body.question, history=body.history)
     )
-
     if not result.success:
         raise HTTPException(500, result.error_message)
 
-    return ChatResponse(
-        answer=result.answer,
-        meeting_id=meeting_id,
-    )
+    return ChatResponse(answer=result.answer, meeting_id=meeting_id)

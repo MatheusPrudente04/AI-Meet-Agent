@@ -1,38 +1,26 @@
 """
-container.py — Injeção de dependência com suporte a dois modos.
+container.py — único ponto de composição (injeção de dependência).
 
-SoloContainer  → uso individual: JSON local, sem fila, Streamlit direto.
-CollabContainer → uso colaborativo: Postgres, Celery, FastAPI + Streamlit.
-
-A factory get_container() decide qual usar via APP_MODE no .env.
+Os modos diferem só em dois pontos (ADR-004):
+  collab (produção)      → MongoDB + fila Celery
+  solo (desenvolvimento) → JSON local + thread
 """
-
 from __future__ import annotations
 
+import threading
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any
-from config.settings import get_settings, AppMode
 
-if TYPE_CHECKING:
-    from agents.collection_agent import CollectionAgent
-    from infrastructure.pipeline.meeting_pipeline_orchestrator import MeetingPipelineOrchestrator
-    from infrastructure.storage_mongodb import MongoDBMeetingRepository
-
+from config.settings import get_settings
+from domain.entities.meeting import Meeting
 from infrastructure.llm.langchain_llm_service import LangChainLLMService
-from infrastructure.json_meeting_repository import JsonMeetingRepository
-
-from use_cases.record_meeting import RecordMeetingUC
-from use_cases.transcribe_meeting import TranscribeMeetingUC
-from use_cases.summarize_meeting import SummarizeMeetingUC
 from use_cases.chat_with_meeting import ChatWithMeetingUC
-from use_cases.analyze_sentiment import AnalyzeSentimentUC
-from use_cases.fetch_meeting_context import FetchMeetingContextUC
+from use_cases.process_meeting import ProcessMeetingInput, ProcessMeetingUC
+from use_cases.summarize_meeting import SummarizeMeetingUC
+from use_cases.transcribe_meeting import TranscribeMeetingUC
 
 
 def _build_transcriber(settings):
-    use_local = settings.use_local_whisper
-
-    if use_local:
+    if settings.use_local_whisper:
         from infrastructure.transcriber.whisper_local_transcriber import WhisperLocalTranscriber
         return WhisperLocalTranscriber()
 
@@ -44,171 +32,48 @@ def _build_transcriber(settings):
     return WhisperTranscriber()
 
 
-def _build_common(settings, repository) -> dict:
-    transcriber = _build_transcriber(settings)
-    llm         = LangChainLLMService()
+def _build_repository(settings):
+    if settings.is_collab:
+        from infrastructure.mongo_meeting_repository import MongoMeetingRepository
+        return MongoMeetingRepository(settings.mongo_uri, settings.mongo_db)
 
-    transcribe_meeting = TranscribeMeetingUC(transcriber)
-    summarize_meeting  = SummarizeMeetingUC(llm, repository)
-    chat_with_meeting  = ChatWithMeetingUC(llm)
-
-    from infrastructure.llm.sentiment_analyzer import SentimentAnalyzer
-    sentiment_analyzer = SentimentAnalyzer(llm_client=llm._llm)
-    analyze_sentiment  = AnalyzeSentimentUC(analyzer=sentiment_analyzer)
-
-    fetch_meeting_context = None
-    if getattr(settings, "enable_calendar", False):
-        from infrastructure.calendar.google_calendar_service import GoogleCalendarService
-        calendar = GoogleCalendarService(
-            credentials_path=getattr(settings, "google_credentials_path", "credentials.json"),
-            token_path=getattr(settings, "google_token_path", "token.json"),
-        )
-        fetch_meeting_context = FetchMeetingContextUC(calendar)
-
-    from infrastructure.recorder.playwright_bot_recorder import PlaywrightBotRecorder
-
-    recorder = PlaywrightBotRecorder(
-        chrome_profile_dir=getattr(settings, "bot_chrome_profile", "./bot_chrome_profile"),
-        audio_dir=settings.audio_storage_path,
-        bot_name=getattr(settings, "bot_name", "Meet Agent"),
-        headless=getattr(settings, "bot_headless", False),
-        on_audio_ready=_make_delivery_callback(settings),
-        capture_port=settings.api_port,
-    )
-    record_meeting = RecordMeetingUC(recorder=recorder)
-
-    from agents.etl_agent import ETLAgent
-    from agents.collection_agent import CollectionAgent
-    from agents.orchestrator_agent import OrchestratorAgent
-    from agents.memory_manager import MemoryManager
-
-    etl_agent = ETLAgent(
-        transcribe_uc=transcribe_meeting,
-        llm=llm,
-        repository=repository,
-    )
-
-    memory_manager = MemoryManager(
-        repository=repository,
-        short_term_max=5,
-        medium_term_threshold=3,
-        long_term_threshold=10,
-    )
-
-    collection_agent = CollectionAgent(
-        repository=repository,
-        memory_manager=memory_manager,
-    )
-
-    orchestrator = OrchestratorAgent(
-        recorder=recorder if record_meeting else None,
-        etl_agent=etl_agent,
-        collection_agent=collection_agent,
-        repository=repository,
-    ) if record_meeting else None
-
-    from infrastructure.pipeline.meeting_pipeline_orchestrator import MeetingPipelineOrchestrator
-    pipeline_orchestrator = MeetingPipelineOrchestrator(
-        repository=repository,
-        transcribe_uc=transcribe_meeting,
-        summarize_uc=summarize_meeting,
-    )
-
-    return {
-        "_transcriber":          transcriber,
-        "_llm":                  llm,
-        "_repository":           repository,
-        "transcribe_meeting":    transcribe_meeting,
-        "summarize_meeting":     summarize_meeting,
-        "chat_with_meeting":     chat_with_meeting,
-        "analyze_sentiment":     analyze_sentiment,
-        "fetch_meeting_context": fetch_meeting_context,
-        "record_meeting":        record_meeting,
-        "repository":            repository,
-        "etl_agent":             etl_agent,
-        "collection_agent":      collection_agent,
-        "memory_manager":        memory_manager,
-        "orchestrator":          orchestrator,
-        "pipeline_orchestrator": pipeline_orchestrator,
-    }
+    from infrastructure.json_meeting_repository import JsonMeetingRepository
+    return JsonMeetingRepository(settings.storage_path)
 
 
-def _make_delivery_callback(settings):
-    if getattr(settings, "app_mode", "solo") != "collab":
-        return None
-
-    async def deliver(audio_path, speaker_log_path, caption_path=None):
-        from worker.tasks import process_meeting_task
-        meeting_id = audio_path.stem
-        process_meeting_task.delay(
-            meeting_id=meeting_id,
-            audio_path=audio_path.as_posix(),
-            title="",
-            caption_path=caption_path.as_posix() if caption_path else None,
-        )
-
-    return deliver
-
-
-class SoloContainer:
-    repository: JsonMeetingRepository
-    record_meeting: Any | None
-    transcribe_meeting: TranscribeMeetingUC
-    summarize_meeting: SummarizeMeetingUC
-    chat_with_meeting: ChatWithMeetingUC
-    analyze_sentiment: AnalyzeSentimentUC
-    fetch_meeting_context: FetchMeetingContextUC | None
-    collection_agent: CollectionAgent
-    pipeline_orchestrator: MeetingPipelineOrchestrator
-
+class Container:
     def __init__(self) -> None:
-        settings   = get_settings()
-        repository = JsonMeetingRepository(storage_path=settings.storage_path)
-        self.__dict__.update(_build_common(settings, repository))
-
-
-class CollabContainer:
-    repository: MongoDBMeetingRepository
-    record_meeting: Any | None
-    transcribe_meeting: TranscribeMeetingUC
-    summarize_meeting: SummarizeMeetingUC
-    chat_with_meeting: ChatWithMeetingUC
-    analyze_sentiment: AnalyzeSentimentUC
-    fetch_meeting_context: FetchMeetingContextUC | None
-    collection_agent: CollectionAgent
-    pipeline_orchestrator: MeetingPipelineOrchestrator
-
-    def __init__(self) -> None:
-        import warnings
         settings = get_settings()
+        llm = LangChainLLMService()
 
-        if not settings.mongo_uri:
-            raise RuntimeError(
-                "APP_MODE=collab requer MONGO_URI no .env.\n"
-                "Exemplo: MONGO_URI=mongodb://mongo:27017/meetagent"
-            )
-
-        from infrastructure.storage_mongodb import MongoDBMeetingRepository
-        repository = MongoDBMeetingRepository(
-            mongo_uri=settings.mongo_uri,
-            db_name=settings.mongo_db,
+        self._is_collab = settings.is_collab
+        self.repository = _build_repository(settings)
+        self.transcribe_meeting = TranscribeMeetingUC(_build_transcriber(settings))
+        self.summarize_meeting = SummarizeMeetingUC(llm)
+        self.chat_with_meeting = ChatWithMeetingUC(llm)
+        self.process_meeting = ProcessMeetingUC(
+            self.transcribe_meeting, self.summarize_meeting, self.repository
         )
-        self.__dict__.update(_build_common(settings, repository))
 
-        try:
-            from worker.tasks import start_background_worker
-            start_background_worker()
-        except Exception as e:
-            warnings.warn(f"Não foi possível iniciar worker background: {e}", stacklevel=2)
+    def enqueue_processing(self, meeting_id: str, audio_path: str, title: str) -> None:
+        """Registra a reunião como pendente e despacha o processamento sem bloquear."""
+        meeting = self.repository.find_by_id(meeting_id) or Meeting(id=meeting_id, title=title)
+        meeting.audio_path = audio_path
+        self.repository.save(meeting)
 
+        if self._is_collab:
+            from worker.tasks import process_meeting_task
+            process_meeting_task.delay(meeting_id, audio_path, title)
+            return
 
-def build_container() -> SoloContainer | CollabContainer:
-    settings = get_settings()
-    if settings.app_mode == AppMode.COLLAB:
-        return CollabContainer()
-    return SoloContainer()
+        # Não-daemon de propósito: o processo só termina depois de processar.
+        threading.Thread(
+            target=self.process_meeting.execute,
+            args=(ProcessMeetingInput(meeting_id, audio_path, title),),
+            name=f"process-{meeting_id[:8]}",
+        ).start()
 
 
 @lru_cache(maxsize=1)
-def get_container() -> SoloContainer | CollabContainer:
-    return build_container()
+def get_container() -> Container:
+    return Container()

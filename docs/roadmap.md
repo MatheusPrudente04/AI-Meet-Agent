@@ -9,6 +9,8 @@ Convenção de id: `S<sprint>-<n>`. Tipo: `fix`, `feat`, `refactor`, `chore`.
 
 ## Sprint 0 — Linha de base (1 a 2 dias)
 
+**Concluída em 2026-11-14.** Bot gravou uma reunião real de 10 min.
+
 Objetivo: estado atual versionado, testes verdes, bot gravando.
 
 | Id | Tipo | Tarefa | Pronto quando |
@@ -23,6 +25,8 @@ Objetivo: estado atual versionado, testes verdes, bot gravando.
 Saída: `pytest` verde com o gate de cobertura atual, e um `.webm` real gravado pelo bot.
 
 ## Sprint 1 — Consolidação (ADR-001 a 005)
+
+**Concluída em 2026-11-14.** Desvios registrados em [adr/README.md](adr/README.md). S1-8 não foi necessária.
 
 Objetivo: um caminho de execução, um schema, uma fonte de status. É a sprint que mais apaga código.
 

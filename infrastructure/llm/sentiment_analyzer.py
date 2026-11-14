@@ -11,7 +11,7 @@ import json
 from domain.entities.sentiment_result import SentimentResult, SpeakerSentiment
 from typing import Optional
 
-from interface.llm_services import LLMServiceError
+from domain.interfaces.llm_service import LLMServiceError
 
 
 # Classe SpeakerSentiment removida daqui — use a do entities.sentiment_result ao invés

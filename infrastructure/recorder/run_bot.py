@@ -27,6 +27,7 @@ logging.basicConfig(
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Bot gravador do Google Meet")
     p.add_argument("--url", required=True, help="Link da reunião do Meet")
+    p.add_argument("--title", default="", help="Título da reunião")
     p.add_argument("--profile", default=None, help="Dir do perfil Chrome (override)")
     p.add_argument("--audio-dir", default=None, help="Dir de saída do áudio (override)")
     p.add_argument("--headless", action="store_true", help="Rodar sem janela")
@@ -49,7 +50,7 @@ async def main() -> int:
         audio_dir=args.audio_dir or settings.audio_storage_path,
         bot_name=settings.bot_name,
         headless=args.headless or settings.bot_headless,
-        on_audio_ready=_make_delivery_callback(settings),
+        on_audio_ready=_make_delivery_callback(args.title),
         capture_port=settings.api_port,
     )
 
@@ -125,22 +126,14 @@ def _log(message: str) -> None:
     logging.getLogger("run_bot").info("%s", message)
 
 
-def _make_delivery_callback(settings):
-    if getattr(settings, "app_mode", "solo") != "collab":
-        return None
+def _make_delivery_callback(title: str):
+    async def deliver(audio_path) -> None:
+        from datetime import datetime
+        from presentation.container import get_container
 
-    async def deliver(audio_path, speaker_log_path, caption_path=None):
-        from worker.tasks import process_meeting_task
-        if not audio_path:
-            _log("Nenhum áudio para entregar ao worker")
-            return
-        meeting_id = audio_path.stem
-        process_meeting_task.delay(
-            meeting_id=meeting_id,
-            audio_path=audio_path.as_posix(),
-            title="",
-            caption_path=caption_path.as_posix() if caption_path else None,
-        )
+        meeting_title = title or f"Reunião {datetime.now():%d/%m/%Y %H:%M}"
+        get_container().enqueue_processing(audio_path.stem, audio_path.as_posix(), meeting_title)
+        _log(f"Processamento despachado: {audio_path.stem}")
 
     return deliver
 

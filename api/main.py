@@ -1,31 +1,22 @@
 """
-api/main.py — FastAPI para modo colaborativo.
+api/main.py — FastAPI.
 
-Endpoints:
-  POST /meetings/upload   → recebe áudio, enfileira processamento
-  GET  /meetings/{id}     → retorna reunião processada
-  GET  /meetings/{id}/status → status do processamento
-  POST /meetings/{id}/chat   → pergunta ao agente
-  GET  /meetings           → lista reuniões do usuário
+  POST /meetings/upload        → recebe áudio e despacha o processamento
+  GET  /meetings               → lista reuniões com status
+  GET  /meetings/{id}/status   → status, erro e resumo da reunião
+  POST /meetings/{id}/chat     → pergunta sobre a reunião
+  POST /capture/chunk|finalize → chunks de áudio enviados pela extensão do bot
 """
-
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from config.settings import get_settings
-from api.routers import meetings, capture
 from api import chat
+from api.routers import capture, meetings
+from config.settings import get_settings
 
 settings = get_settings()
 
-app = FastAPI(
-    title="Meet Agent API",
-    description="API colaborativa do agente de reuniões",
-    version="1.0.0",
-)
+app = FastAPI(title="Meet Agent API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,19 +29,6 @@ app.add_middleware(
 app.include_router(meetings.router, prefix="/meetings", tags=["meetings"])
 app.include_router(chat.router, prefix="/meetings", tags=["chat"])
 app.include_router(capture.router, prefix="/capture", tags=["capture"])
-
-
-@app.on_event("startup")
-async def startup():
-    if settings.is_collab:
-        from motor.motor_asyncio import AsyncIOMotorClient
-        from beanie import init_beanie
-        from infrastructure.mongodb_documents import MeetingDocument
-        client = AsyncIOMotorClient(settings.mongo_uri)
-        await init_beanie(
-            database=client[settings.mongo_db],
-            document_models=[MeetingDocument],
-        )
 
 
 @app.get("/health")

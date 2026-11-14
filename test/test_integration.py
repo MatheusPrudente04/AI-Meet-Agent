@@ -6,8 +6,8 @@ from pathlib import Path
 from domain.entities.meeting import Meeting, Summary, Task, Decision
 from domain.entities.meeting_type import MeetingType
 from domain.entities.transcript import Transcript, Segment
-from interface.llm_services import ILLMService
-from interface.transcriber import ITranscriber
+from domain.interfaces.llm_service import ILLMService
+from domain.interfaces.transcriber import ITranscriber
 from use_cases.transcribe_meeting import TranscribeMeetingUC, TranscribeMeetingInput
 from use_cases.summarize_meeting import SummarizeMeetingUC, SummarizeMeetingInput
 from use_cases.chat_with_meeting import ChatWithMeetingUC, ChatWithMeetingInput

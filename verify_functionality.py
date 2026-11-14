@@ -64,8 +64,6 @@ class ProjectValidator:
             "infrastructure/exporters",
             "infrastructure/calendar",
             "use_cases",
-            "interface",
-            "repositories",
             "presentation",
             "presentation/streamlit",
             "api",
@@ -107,11 +105,11 @@ class ProjectValidator:
             "domain/interfaces/exporter.py",
 
             # Interfaces
-            "interface/transcriber.py",
-            "interface/llm_services.py",
+            "domain/interfaces/transcriber.py",
+            "domain/interfaces/llm_service.py",
 
             # Repositories
-            "repositories/meeting_repository.py",
+            "domain/interfaces/meeting_repository.py",
 
             # Infrastructure
             "infrastructure/json_meeting_repository.py",
@@ -133,7 +131,9 @@ class ProjectValidator:
             "use_cases/chat_with_meeting.py",
             "use_cases/analyze_sentiment.py",
             "use_cases/fetch_meeting_context.py",
-            "use_cases/record_meeting.py",
+            "use_cases/process_meeting.py",
+            "infrastructure/mongo_meeting_repository.py",
+            "infrastructure/meeting_serialization.py",
 
             # Presentation
             "presentation/container.py",
@@ -165,8 +165,8 @@ class ProjectValidator:
         sys.path.insert(0, str(self.root))
 
         test_imports = [
-            ("interface.transcriber", "ITranscriber"),
-            ("interface.llm_services", "ILLMService"),
+            ("domain.interfaces.transcriber", "ITranscriber"),
+            ("domain.interfaces.llm_service", "ILLMService"),
             ("config.settings", "get_settings"),
             ("domain.entities.meeting", "Meeting"),           
             ("domain.entities.meeting_type", "MeetingType"),  
@@ -174,7 +174,7 @@ class ProjectValidator:
             ("domain.entities.calendar_event", "CalendarEvent"),
             ("domain.entities.sentiment_result", "SentimentResult"),
             ("domain.interfaces.calendar_service", "ICalendarService"),
-            ("repositories.meeting_repository", "IMeetingRepository"),
+            ("domain.interfaces.meeting_repository", "IMeetingRepository"),
             ("infrastructure.json_meeting_repository", "JsonMeetingRepository"),
             ("infrastructure.transcriber.whisper_transcriber", "WhisperTranscriber"),
             ("infrastructure.llm.langchain_llm_service", "LangChainLLMService"),
@@ -184,7 +184,7 @@ class ProjectValidator:
             ("use_cases.summarize_meeting", "SummarizeMeetingUC"),
             ("use_cases.chat_with_meeting", "ChatWithMeetingUC"),
             ("use_cases.analyze_sentiment", "AnalyzeSentimentUC"),
-            ("use_cases.record_meeting", "RecordMeetingUC"),
+            ("use_cases.process_meeting", "ProcessMeetingUC"),
             ("presentation.container", "get_container"),
         ]
 

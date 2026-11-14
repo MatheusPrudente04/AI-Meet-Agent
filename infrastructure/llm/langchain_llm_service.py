@@ -7,7 +7,7 @@ from pydantic import SecretStr
 
 from domain.entities.meeting import Summary, Task, Decision
 from domain.entities.meeting_type import MeetingType
-from interface.llm_services import ILLMService, LLMServiceError
+from domain.interfaces.llm_service import ILLMService, LLMServiceError
 from config.settings import get_settings
 from infrastructure.llm.prompt_builder import PromptBuilder
 
@@ -40,24 +40,24 @@ class LangChainLLMService(ILLMService):
         if llm:
             self._llm = llm
 
-        elif getattr(settings, "llm_provider", "openai") == "ollama":
+        elif settings.llm_provider == "ollama":
             self._llm = ChatOpenAI(
-                model=getattr(settings, "ollama_model", "nemotron-mini"),
+                model=settings.ollama_model,
                 api_key=SecretStr("ollama"),
-                base_url=getattr(settings, "ollama_base_url", "http://localhost:11434/v1"),
+                base_url=settings.ollama_base_url,
                 temperature=0.2,
             )
             self._use_ollama_native = True
             
-        elif getattr(settings, "llm_provider", "openai") == "openrouter":
+        elif settings.llm_provider == "openrouter":
             self._llm = ChatOpenAI(
-                model=getattr(settings, "openrouter_model", "openai/gpt-4o"),
-                api_key=SecretStr(getattr(settings, "openrouter_api_key", "")),
+                model=settings.openrouter_model,
+                api_key=SecretStr(settings.openrouter_api_key),
                 base_url="https://openrouter.ai/api/v1",
                 temperature=0.2,
                 default_headers={
-                    "HTTP-Referer": getattr(settings, "openrouter_site_url", ""),
-                    "X-Title": getattr(settings, "openrouter_site_name", "Meet Agent"),
+                    "HTTP-Referer": settings.openrouter_site_url,
+                    "X-Title": settings.openrouter_site_name,
                 },
             )
 
@@ -69,9 +69,9 @@ class LangChainLLMService(ILLMService):
                     stacklevel=2,
                 )
                 self._llm = ChatOpenAI(
-                    model=getattr(settings, "ollama_model", "nemotron-mini"),
+                    model=settings.ollama_model,
                     api_key=SecretStr("ollama"),
-                    base_url=getattr(settings, "ollama_base_url", "http://localhost:11434/v1"),
+                    base_url=settings.ollama_base_url,
                     temperature=0.2,
                 )
                 self._use_ollama = True
@@ -86,12 +86,12 @@ class LangChainLLMService(ILLMService):
         """Chama Ollama via API nativa (com format=json) para sumarização."""
         import requests as _requests
         settings = get_settings()
-        base = getattr(settings, "ollama_base_url", "http://localhost:11434/v1")
+        base = settings.ollama_base_url
         base = base.replace("/v1", "").replace("/v1/", "")
         resp = _requests.post(
             f"{base}/api/chat",
             json={
-                "model": getattr(settings, "ollama_model", "nemotron-mini"),
+                "model": settings.ollama_model,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message},

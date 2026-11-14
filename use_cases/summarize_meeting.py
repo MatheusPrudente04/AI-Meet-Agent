@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Optional
 from domain.entities.meeting import Meeting, Summary
 from domain.entities.meeting_type import MeetingType
-from interface.llm_services import ILLMService, LLMServiceError
+from domain.interfaces.llm_service import ILLMService, LLMServiceError
 
 
 # Dados de entrada para sumarização de reunião

@@ -8,16 +8,28 @@ Uma ADR só vira código depois de aceita. Ao aceitar, troque o status e a data 
 
 | # | Decisão | Status | Sprint | Reversível? |
 |---|---------|--------|--------|-------------|
-| 001 | Pipeline único de processamento | Proposta | 1 | Sim |
-| 002 | Documento único de reunião e status persistido | Proposta | 1 | Com migração |
-| 003 | Acesso ao MongoDB síncrono com PyMongo | Proposta | 1 | Sim |
-| 004 | Modos de execução: collab é produção, solo é desenvolvimento | Proposta | 1 | Sim |
-| 005 | Configuração centralizada e validada na partida | Proposta | 1 | Sim |
+| 001 | Pipeline único de processamento | Aceita, implementada em 2026-11-14 | 1 | Sim |
+| 002 | Documento único de reunião e status persistido | Aceita, implementada em 2026-11-14 | 1 | Com migração |
+| 003 | Acesso ao MongoDB síncrono com PyMongo | Aceita, implementada em 2026-11-14 | 1 | Sim |
+| 004 | Modos de execução: collab é produção, solo é desenvolvimento | Aceita, implementada em 2026-11-14 | 1 | Sim |
+| 005 | Configuração centralizada e validada na partida | Aceita, implementada em 2026-11-14 | 1 | Sim |
 | 006 | Bot como worker dedicado, despachado por fila | Proposta | 2 | Sim |
 | 007 | Autenticação e limites da API | Proposta | 3 | Sim |
 | 008 | Runtime e dependências travadas | Proposta | 3 | Sim |
 | 009 | Legendas e identificação de falantes | Proposta (decisão do dono do produto) | 4 | Sim |
 | 010 | Contexto do LLM em reuniões longas | Adiada (medir antes) | 4 | Sim |
+
+### Desvios na implementação da Sprint 1
+
+- **ADR-002:** não foi criado `update_status` no repositório; `save(meeting)` com `status` e `error`
+  na entidade cobre o caso com uma operação a menos no contrato.
+- **ADR-002:** `participant_info`, `speaker_observations` e `speech_blocks` saíram da entidade, por
+  não terem nenhum produtor. Voltam na forma definida pela ADR-009 fase 2, se ela for aceita.
+- **ADR-002:** não há script de migração. Documentos antigos sem `status` têm o valor derivado na
+  leitura (`done` se há resumo) e passam a tê-lo gravado no próximo `save`.
+- **ADR-001:** as rotas `/meetings/bot*` e o `RecordMeetingUC` foram removidos em vez de adaptados,
+  porque bloqueavam a API pela reunião inteira. O despacho do bot pela API volta na ADR-006.
+- **ADR-001:** sem retry automático no Celery; a falha fica no documento e reprocessar o id é seguro.
 
 ---
 

@@ -1,15 +1,9 @@
-from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional
-from enum import Enum
 
+from pydantic import BaseModel
 
-class ProcessingStatus(str, Enum):
-    PENDING      = "pending"
-    TRANSCRIBING = "transcribing"
-    SUMMARIZING  = "summarizing"
-    DONE         = "done"
-    ERROR        = "error"
+from domain.entities.meeting import MeetingStatus
 
 
 class TaskSchema(BaseModel):
@@ -32,7 +26,8 @@ class SummarySchema(BaseModel):
 
 class MeetingStatusResponse(BaseModel):
     meeting_id: str
-    status: ProcessingStatus
+    status: MeetingStatus
+    error: str = ""
     title: str
     started_at: datetime
     duration_minutes: float = 0.0
@@ -42,7 +37,7 @@ class MeetingStatusResponse(BaseModel):
 
 class UploadResponse(BaseModel):
     meeting_id: str
-    status: ProcessingStatus
+    status: MeetingStatus
     message: str
 
 
