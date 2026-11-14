@@ -34,6 +34,8 @@ class LangChainLLMService(ILLMService):
         settings = get_settings()
         self._prompt_builder = PromptBuilder()
         self._current_transcript: str = ""
+        self._use_ollama = False
+        self._use_ollama_native = False
 
         if llm:
             self._llm = llm
@@ -45,7 +47,8 @@ class LangChainLLMService(ILLMService):
                 base_url=getattr(settings, "ollama_base_url", "http://localhost:11434/v1"),
                 temperature=0.2,
             )
-
+            self._use_ollama_native = True
+            
         elif getattr(settings, "llm_provider", "openai") == "openrouter":
             self._llm = ChatOpenAI(
                 model=getattr(settings, "openrouter_model", "openai/gpt-4o"),
@@ -71,6 +74,7 @@ class LangChainLLMService(ILLMService):
                     base_url=getattr(settings, "ollama_base_url", "http://localhost:11434/v1"),
                     temperature=0.2,
                 )
+                self._use_ollama = True
             else:
                 self._llm = ChatOpenAI(
                     model=settings.openai_model,
@@ -107,11 +111,7 @@ class LangChainLLMService(ILLMService):
             system_prompt = self._prompt_builder.build_summarize_system(meeting_type)
             user_message  = self._prompt_builder.build_summarize_user(transcript)
 
-            from config.settings import get_settings
-            _settings = get_settings()
-            provider = getattr(_settings, "llm_provider", "openai")
-
-            if provider == "ollama":
+            if self._use_ollama_native:
                 content = self._call_ollama_summarize(system_prompt, user_message)
             else:
                 messages: list[BaseMessage] = [
@@ -164,7 +164,11 @@ class LangChainLLMService(ILLMService):
                 cleaned = cleaned.rsplit("```", 1)[0]
             cleaned = cleaned.strip()
 
-            data: dict = json.loads(cleaned)
+            try:
+                data: dict = json.loads(cleaned)
+            except json.JSONDecodeError:
+                # modelo local às vezes corta a chave final
+                data = json.loads(cleaned + "}")
 
             tasks = [
                 Task(

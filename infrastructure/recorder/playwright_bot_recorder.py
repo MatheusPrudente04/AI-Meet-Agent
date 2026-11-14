@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import time
 import uuid
 from dataclasses import dataclass
@@ -41,6 +42,10 @@ MEET_STATUS_JS = """
     return { left, participantCount, leaveVisible };
 })()
 """
+
+
+# ID fixo da extensão, derivado do campo "key" do manifest.json.
+EXTENSION_ID = "cjehgonhdknnomnbbdcmjkhomfnghcfm"
 
 
 class BotNotLoggedInError(Exception):
@@ -99,6 +104,10 @@ class PlaywrightBotRecorder:
 
         ext_dir = Path(__file__).parent / "extension"
 
+        # O perfil guarda em cache o service worker da extensão e continua
+        # executando a versão antiga mesmo depois de o arquivo mudar em disco.
+        shutil.rmtree(Path(self._profile_dir) / "Default" / "Service Worker", ignore_errors=True)
+
         async with async_playwright() as pw:
             context = await pw.chromium.launch_persistent_context(
                 self._profile_dir,
@@ -108,8 +117,11 @@ class PlaywrightBotRecorder:
                     "--disable-dev-shm-usage",
                     f"--load-extension={ext_dir}",
                     f"--disable-extensions-except={ext_dir}",
+                    # Sem isto o tabCapture exige clique no ícone da extensão (activeTab).
+                    f"--allowlisted-extension-id={EXTENSION_ID}",
                     "--autoplay-policy=no-user-gesture-required",
-                    "--use-fake-ui-for-media-stream",
+                    # NÃO usar --use-fake-ui-for-media-stream: ele faz o getUserMedia
+                    # da captura de aba falhar com "Requested device not found".
                     "--disable-features=VizDisplayCompositor",
                 ],
                 permissions=["microphone", "camera"],
@@ -122,8 +134,10 @@ class PlaywrightBotRecorder:
 
             await self._verify_login(page)
             await self._dismiss_device_dialogs(page)
+            await self._mute_devices(page)
             await self._click_join_button(page)
             await self._wait_until_admitted(page)
+            await self._mute_devices(page)
 
             logger.info("Admitido — ativando legendas")
             await self._enable_captions(page)
@@ -193,6 +207,24 @@ class PlaywrightBotRecorder:
                     await asyncio.sleep(0.3)
             except Exception:
                 pass
+
+    async def _mute_devices(self, page: Page) -> None:
+        """Desliga microfone e câmera: o bot só escuta.
+
+        Os rótulos "Desativar ..." só existem com o dispositivo ligado, então
+        chamar de novo não religa nada.
+        """
+        for label in (
+            "Desativar microfone", "Turn off microphone",
+            "Desativar câmera", "Turn off camera",
+        ):
+            try:
+                btn = page.locator(f'[aria-label*="{label}"]')
+                if await btn.count() > 0:
+                    await btn.first.click(timeout=2_000)
+                    logger.info("Dispositivo silenciado: %s", label)
+            except Exception as exc:
+                logger.warning("Falha ao silenciar (%s): %s", label, exc)
 
     async def _click_join_button(self, page: Page) -> None:
         """Clica no botão de entrar na reunião."""

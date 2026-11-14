@@ -149,7 +149,7 @@ def process_meeting_task_fn(
 
     if audio_vazio:
         if caption_path and Path(caption_path).exists():
-            _set_status(meeting_id, "fallback_legendas")
+            _set_status(meeting_id, "transcribing")
             _obs(" Áudio vazio — usando legendas como fallback para transcrição.")
             transcript_data = _build_transcript_from_captions(caption_path)
             transcript_text = transcript_data["full_text"]

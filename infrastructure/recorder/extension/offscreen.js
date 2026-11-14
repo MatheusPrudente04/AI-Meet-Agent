@@ -13,13 +13,19 @@ let chunkSeq = 0;
 let captureSession = null;
 let captureEndpoint = null;
 
+// Offscreen só tem chrome.runtime (sem chrome.storage): o status vai por
+// mensagem ao service worker, que é quem grava no storage.
+function report(status) {
+  return chrome.runtime.sendMessage({ type: 'OFFSCREEN_STATUS', status }).catch(() => {});
+}
+
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.target !== 'offscreen') return;
 
   if (msg.type === 'OFFSCREEN_START') {
     startRecording(msg).catch((e) => {
       console.error('[offscreen] startRecording error:', e);
-      chrome.storage.local.set({ captureStatus: { recording: false, error: String(e), chunks: 0 } });
+      report({ recording: false, error: String(e), chunks: 0 });
     });
   }
 
@@ -63,14 +69,13 @@ async function startRecording({ streamId, session, endpoint, chunkMs }) {
     if (!e.data || e.data.size === 0) return;
     const seq = chunkSeq++;
     try {
-      await fetch(`${captureEndpoint}/capture/chunk?session=${captureSession}&seq=${seq}`, {
+      const resp = await fetch(`${captureEndpoint}/capture/chunk?session=${captureSession}&seq=${seq}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/octet-stream' },
         body: e.data,
       });
-      await chrome.storage.local.set({
-        captureStatus: { recording: true, chunks: seq + 1, error: null },
-      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      await report({ recording: true, chunks: seq + 1, error: null });
     } catch (err) {
       console.error('[offscreen] chunk upload error:', err);
     }
@@ -84,15 +89,11 @@ async function startRecording({ streamId, session, endpoint, chunkMs }) {
     } catch (err) {
       console.error('[offscreen] finalize error:', err);
     }
-    await chrome.storage.local.set({
-      captureStatus: { recording: false, chunks: chunkSeq, finalized: true, error: null },
-    });
+    await report({ recording: false, chunks: chunkSeq, finalized: true, error: null });
   };
 
   recorder.start(chunkMs || 2000);
-  await chrome.storage.local.set({
-    captureStatus: { recording: true, chunks: 0, finalized: false, error: null },
-  });
+  await report({ recording: true, chunks: 0, finalized: false, error: null });
   console.log('[offscreen] gravação iniciada, session=', session);
 }
 

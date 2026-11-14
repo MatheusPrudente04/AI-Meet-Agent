@@ -78,7 +78,7 @@ class ProjectValidator:
         for dir_name in required_dirs:
             dir_path = self.root / dir_name
             if dir_path.exists():
-                print(f"  ✅ {dir_name}/")
+                print(f"   {dir_name}/")
             else:
                 print(f"  ❌ {dir_name}/ (MISSING)")
                 self.issues["structure"].append(f"Missing: {dir_name}")
@@ -88,7 +88,7 @@ class ProjectValidator:
         """Check if critical files exist"""
         print("📄 Checking Critical Files...\n")
 
-        critical_files = [                              
+        critical_files = [                              # ← corrigido (era crcritical_files)
             # Entrada
             "main.py",
 
@@ -152,9 +152,9 @@ class ProjectValidator:
         for file_name in critical_files:
             file_path = self.root / file_name
             if file_path.exists():
-                print(f"  ✅ {file_name}")
+                print(f"   {file_name}")
             else:
-                print(f"  ⚠️  {file_name} (MISSING)")
+                print(f"   {file_name} (MISSING)")
                 self.issues["missing_files"].append(file_name)
         print()
 # Verificação de imports específicos (exemplo para Google Calendar Service )
@@ -193,10 +193,10 @@ class ProjectValidator:
             try:
                 mod = __import__(module_name, fromlist=[class_name])
                 getattr(mod, class_name)
-                print(f"  ✅ {module_name}.{class_name}")  
+                print(f"   {module_name}.{class_name}")  
             except Exception as e:
                 failed += 1
-                print(f"  ❌ {module_name}.{class_name}")  
+                print(f"   {module_name}.{class_name}")  
                 print(f"     └─ {str(e)[:80]}")
                 self.issues["imports"].append(f"{module_name}.{class_name}: {str(e)[:60]}")
 

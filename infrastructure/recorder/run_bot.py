@@ -50,6 +50,7 @@ async def main() -> int:
         bot_name=settings.bot_name,
         headless=args.headless or settings.bot_headless,
         on_audio_ready=_make_delivery_callback(settings),
+        capture_port=settings.api_port,
     )
 
     # Registra handlers de sinal para encerramento gracioso.

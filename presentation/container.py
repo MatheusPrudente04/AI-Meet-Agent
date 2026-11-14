@@ -73,6 +73,7 @@ def _build_common(settings, repository) -> dict:
         bot_name=getattr(settings, "bot_name", "Meet Agent"),
         headless=getattr(settings, "bot_headless", False),
         on_audio_ready=_make_delivery_callback(settings),
+        capture_port=settings.api_port,
     )
     record_meeting = RecordMeetingUC(recorder=recorder)
 

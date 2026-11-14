@@ -13,7 +13,7 @@
 let creating = null;
 
 async function ensureOffscreen() {
-  const existing = await chrome.runstime.getContexts({
+  const existing = await chrome.runtime.getContexts({
     contextTypes: ['OFFSCREEN_DOCUMENT'],
   });
   if (existing.length > 0) return;
@@ -56,9 +56,9 @@ async function startCapture({ tabId, session, endpoint, chunkMs }) {
     chunkMs: chunkMs || 2000,
   });
 
-  // CONFIRMAÇÃO via storage — é isto que o recorder lê (canal confiável).
+  // Quem confirma a gravação é o offscreen (captureStatus.recording), depois
+  // que o MediaRecorder de fato iniciou. Aqui só registramos o despacho.
   await chrome.storage.local.set({
-    captureStatus: { recording: true, chunks: 0, finalized: false, error: null, phase: 'recording' },
     lastStart: { ok: true, tabId: targetTabId, ts: Date.now() },
   });
 
@@ -104,6 +104,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         .catch(() => {});
       return true;
     }
+    return false;
+  }
+
+  if (msg.type === 'OFFSCREEN_STATUS') {
+    chrome.storage.local.set({ captureStatus: msg.status });
     return false;
   }
 

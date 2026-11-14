@@ -187,3 +187,15 @@ class TestIntegracaoLLMServiceComTipo:
         assert summary.overview == "A reunião é sobre um teste"
         assert len(summary.topics) == 1
         assert summary.tasks[0].description == "Realizar o teste"
+
+
+def test_parse_summary_json_valido_retorna_summary():
+    from unittest.mock import MagicMock
+    from infrastructure.llm.langchain_llm_service import LangChainLLMService
+
+    service = LangChainLLMService(llm=MagicMock())
+    summary = service._parse_summary(
+        '{"overview": "ok", "topics": ["a"], "tasks": [{"description": "t"}], "decisions": []}'
+    )
+    assert summary.overview == "ok"
+    assert summary.tasks[0].description == "t"

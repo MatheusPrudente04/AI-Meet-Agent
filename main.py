@@ -29,12 +29,13 @@ def run_streamlit() -> None:
 
 def run_api() -> None:
     """Sobe a FastAPI via uvicorn."""
+    from config.settings import get_settings
     subprocess.run(
         [
             sys.executable, "-m", "uvicorn",
             "api.main:app",
             "--host", "0.0.0.0",
-            "--port", "8000",
+            "--port", str(get_settings().api_port),
         ],
         check=True,
     )
