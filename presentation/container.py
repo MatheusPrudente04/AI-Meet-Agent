@@ -55,8 +55,13 @@ class Container:
             self.transcribe_meeting, self.summarize_meeting, self.repository
         )
 
-    def enqueue_processing(self, meeting_id: str, audio_path: str, title: str) -> None:
-        """Registra a reunião como pendente e despacha o processamento sem bloquear."""
+    def enqueue_processing(self, meeting_id: str, audio_path: str, title: str, wait: bool = False) -> None:
+        """Registra a reunião como pendente e despacha o processamento.
+
+        wait=True é para processos que encerram logo em seguida (CLI, run_bot):
+        em solo roda na própria chamada, porque uma thread não sobrevive ao fim
+        do interpretador. Em collab é ignorado — a fila é quem executa.
+        """
         meeting = self.repository.find_by_id(meeting_id) or Meeting(id=meeting_id, title=title)
         meeting.audio_path = audio_path
         self.repository.save(meeting)
@@ -66,12 +71,14 @@ class Container:
             process_meeting_task.delay(meeting_id, audio_path, title)
             return
 
-        # Não-daemon de propósito: o processo só termina depois de processar.
-        threading.Thread(
-            target=self.process_meeting.execute,
-            args=(ProcessMeetingInput(meeting_id, audio_path, title),),
-            name=f"process-{meeting_id[:8]}",
-        ).start()
+        data = ProcessMeetingInput(meeting_id, audio_path, title)
+        if wait:
+            self.process_meeting.execute(data)
+        else:
+            threading.Thread(
+                target=self.process_meeting.execute, args=(data,),
+                name=f"process-{meeting_id[:8]}", daemon=True,
+            ).start()
 
 
 @lru_cache(maxsize=1)

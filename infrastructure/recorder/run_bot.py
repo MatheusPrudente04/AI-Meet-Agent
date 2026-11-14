@@ -132,7 +132,11 @@ def _make_delivery_callback(title: str):
         from presentation.container import get_container
 
         meeting_title = title or f"Reunião {datetime.now():%d/%m/%Y %H:%M}"
-        get_container().enqueue_processing(audio_path.stem, audio_path.as_posix(), meeting_title)
+        # wait=True: este processo termina logo depois; em solo o processamento roda aqui.
+        await asyncio.to_thread(
+            get_container().enqueue_processing,
+            audio_path.stem, audio_path.as_posix(), meeting_title, True,
+        )
         _log(f"Processamento despachado: {audio_path.stem}")
 
     return deliver
