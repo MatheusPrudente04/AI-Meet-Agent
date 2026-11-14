@@ -4,7 +4,7 @@ import sqlite3
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 from domain.entities.meeting import Meeting, Summary, Task, Decision
@@ -155,7 +155,7 @@ class SqliteMeetingRepository(IMeetingRepository):
             ],
         }
 
-    def _get_row(self, row: sqlite3.Row, key: str, default=None):
+    def _get_row(self, row: sqlite3.Row, key: str, default: Any = None) -> Any:
         try:
             return row[key]
         except (IndexError, KeyError):

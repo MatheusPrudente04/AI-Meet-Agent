@@ -78,6 +78,9 @@ class Meeting:
     participants: list[str] = field(default_factory=list)
     duration_minutes: float = 0.0
     transcript_raw: str = ""
+    participant_info: dict[str, str] = field(default_factory=dict)
+    speaker_observations: list[dict] = field(default_factory=list)
+    speech_blocks: list = field(default_factory=list)
 
     @property
     def is_transcribed(self) -> bool:

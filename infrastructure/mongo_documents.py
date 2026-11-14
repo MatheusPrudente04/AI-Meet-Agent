@@ -47,7 +47,7 @@ class SpeechBlockDocument(Document):
 
 
 class MeetingDocument(Document):
-    id: str
+    id: Optional[str] = None  # type: ignore[assignment]
     title: str
     started_at: datetime
     audio_path: Optional[str] = None

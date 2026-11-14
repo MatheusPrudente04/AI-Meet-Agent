@@ -79,13 +79,13 @@ class MeetingPipelineOrchestrator:
             logger.info("[Pipeline] Passo 0/5 — Validando componentes do pipeline")
             validation = self._validate_components()
             if not validation["ok"]:
-                logger.error("[Pipeline] ❌ Componentes com falha: %s", validation["errors"])
+                logger.error("[Pipeline] Componentes com falha: %s", validation["errors"])
                 return
 
             # ── 1. Validar arquivo de áudio ────────────────────────────────
             logger.info("[Pipeline] Passo 1/5 — Validando áudio: %s", audio_path)
             if not self._validate_audio(audio_path):
-                logger.error("[Pipeline] ❌ Áudio não encontrado: %s", audio_path)
+                logger.error("[Pipeline]  Áudio não encontrado: %s", audio_path)
                 return
 
             # ── 2. Criar e salvar reunião (status → "pending") ──────────────
@@ -100,25 +100,25 @@ class MeetingPipelineOrchestrator:
             logger.info("[Pipeline] Passo 3/5 — Transcrevendo: %s", meeting_id)
             self._transcribe(meeting)
             if not meeting.transcript_text:
-                logger.error("[Pipeline] ❌ Transcrição falhou: %s", meeting_id)
+                logger.error("[Pipeline] Transcrição falhou: %s", meeting_id)
                 return
             self._repository.save(meeting)
-            logger.info("[Pipeline] ✅ Transcrição concluída: %s", meeting_id)
+            logger.info("[Pipeline]  Transcrição concluída: %s", meeting_id)
 
             # ── 4. Sumarizar (status → "done" no save) ──────────────────────
             logger.info("[Pipeline] Passo 4/5 — Sumarizando: %s", meeting_id)
             self._summarize(meeting)
             if not meeting.is_summarized:
-                logger.error("[Pipeline] ❌ Sumarização falhou: %s", meeting_id)
+                logger.error("[Pipeline] Sumarização falhou: %s", meeting_id)
                 return
             self._repository.save(meeting)
-            logger.info("[Pipeline] ✅ Sumarização concluída: %s", meeting_id)
+            logger.info("[Pipeline]  Sumarização concluída: %s", meeting_id)
 
             # ── 5. Finalizar ────────────────────────────────────────────────
             logger.info("[Pipeline] Passo 5/5 — Pipeline completo: %s — %s", meeting_id, title)
 
         except Exception as exc:
-            logger.exception("[Pipeline] ❌ Erro no pipeline %s: %s", meeting_id, exc)
+            logger.exception("[Pipeline] Erro no pipeline %s: %s", meeting_id, exc)
 
     # ── Passos individuais ────────────────────────────────────────────────
 
@@ -144,6 +144,9 @@ class MeetingPipelineOrchestrator:
         )
 
     def _transcribe(self, meeting: Meeting) -> None:
+        if not meeting.audio_path:
+            return
+
         has_observations = bool(meeting.speaker_observations) and bool(meeting.participant_info)
 
         if has_observations and self._block_transcriber is not None:

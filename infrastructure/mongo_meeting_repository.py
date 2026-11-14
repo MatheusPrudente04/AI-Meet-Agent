@@ -12,14 +12,24 @@ from infrastructure.mongo_documents import (
     DecisionDocument,
     SpeechBlockDocument,
 )
-from infrastructure.mongo_setup import _get_loop
+import asyncio
+import concurrent.futures
 
 logger = logging.getLogger(__name__)
 
 
+def _run_async(coro):
+    try:
+        asyncio.get_running_loop()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+
 class MongoMeetingRepository(IMeetingRepository):
     def _sync(self, coro):
-        return _get_loop().run_until_complete(coro)
+        return _run_async(coro)
 
     # ── IMeetingRepository ──────────────────────────────────────────────
 
@@ -79,7 +89,7 @@ class MongoMeetingRepository(IMeetingRepository):
         return self._doc_to_meeting(doc)
 
     async def _list_all(self) -> list[Meeting]:
-        docs = await MeetingDocument.find_all().sort(-MeetingDocument.started_at).to_list()
+        docs = await MeetingDocument.find_all().sort("-started_at").to_list()
         return [self._doc_to_meeting(d) for d in docs]
 
     async def _delete(self, meeting_id: str) -> None:
@@ -141,7 +151,7 @@ class MongoMeetingRepository(IMeetingRepository):
                 ) for d in (s.decisions or [])],
             )
         return Meeting(
-            id=doc.id,
+            id=doc.id or "",
             title=doc.title,
             started_at=doc.started_at,
             audio_path=doc.audio_path,

@@ -114,23 +114,16 @@ class PyannoteDiarizer:
         if self._pipeline is not None:
             return self._pipeline
 
-        # Verifica se pyannote.audio está instalado
+        # Verifica se pyannote.audio e torch estão instalados
         try:
             from pyannote.audio import Pipeline
-        except ImportError:
-            raise TranscriptionError(
-                "pyannote.audio não instalado.\n"
-                "Execute: pip install pyannote.audio"
-            )
-
-        # Verifica se torch está instalado
-        try:
             import torch
-        except ImportError:
+        except ImportError as exc:
+            missing = "torch" if "torch" in str(exc) else "pyannote.audio"
             raise TranscriptionError(
-                "torch não instalado.\n"
-                "Execute: pip install torch"
-            )
+                f"{missing} não instalado.\n"
+                "Execute: pip install pyannote.audio torch"
+            ) from exc
 
         # Carrega o modelo do HuggingFace e move para o device configurado
         try:

@@ -128,7 +128,7 @@ class LangChainLLMService(ILLMService):
         except Exception as e:
             raise LLMServiceError(f"Falha na sumarização: {str(e)}") from e
 
-    def chat(self, question: str, context: str, history: list[dict]) -> str:
+    def chat(self, question: str, context: str, history: list[dict], summary_context: str = "", user_id: str | None = None) -> str:
         """Responde pergunta sobre reunião mantendo contexto de conversa."""
         try:
             messages: list[BaseMessage] = [

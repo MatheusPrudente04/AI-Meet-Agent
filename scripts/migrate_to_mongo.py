@@ -61,8 +61,8 @@ def migrate():
         print("Nenhuma reunião para migrar.")
         return
 
-    print(f"Inicializando MongoDB em {settings.mongo_uri}/{settings.mongo_db_name}...")
-    init_mongo(settings.mongo_uri, settings.mongo_db_name)
+    print(f"Inicializando MongoDB em {settings.mongo_uri}/{settings.mongo_db}...")
+    init_mongo(settings.mongo_uri, settings.mongo_db)
 
     mongo_repo = MongoMeetingRepository()
 

@@ -7,9 +7,16 @@ CollabContainer → uso colaborativo: Postgres, Celery, FastAPI + Streamlit.
 A factory get_container() decide qual usar via APP_MODE no .env.
 """
 
+from __future__ import annotations
+
 from functools import lru_cache
-from typing import Optional, Any
+from typing import TYPE_CHECKING, Any
 from config.settings import get_settings, AppMode
+
+if TYPE_CHECKING:
+    from agents.collection_agent import CollectionAgent
+    from infrastructure.pipeline.meeting_pipeline_orchestrator import MeetingPipelineOrchestrator
+    from infrastructure.storage_mongodb import MongoDBMeetingRepository
 
 from infrastructure.llm.langchain_llm_service import LangChainLLMService
 from infrastructure.json_meeting_repository import JsonMeetingRepository
@@ -58,20 +65,16 @@ def _build_common(settings, repository) -> dict:
         )
         fetch_meeting_context = FetchMeetingContextUC(calendar)
 
-    record_meeting = None
-    recorder_provider = getattr(settings, "recorder_provider", "none")
+    from infrastructure.recorder.playwright_bot_recorder import PlaywrightBotRecorder
 
-    if recorder_provider == "playwright":
-        from infrastructure.recorder.playwright_bot_recorder import PlaywrightBotRecorder
-
-        recorder = PlaywrightBotRecorder(
-            chrome_profile_dir=getattr(settings, "bot_chrome_profile", "./bot_chrome_profile"),
-            audio_dir=settings.audio_storage_path,
-            bot_name=getattr(settings, "bot_name", "Meet Agent"),
-            headless=getattr(settings, "bot_headless", False),
-            on_audio_ready=_make_delivery_callback(settings),
-        )
-        record_meeting = RecordMeetingUC(recorder=recorder)
+    recorder = PlaywrightBotRecorder(
+        chrome_profile_dir=getattr(settings, "bot_chrome_profile", "./bot_chrome_profile"),
+        audio_dir=settings.audio_storage_path,
+        bot_name=getattr(settings, "bot_name", "Meet Agent"),
+        headless=getattr(settings, "bot_headless", False),
+        on_audio_ready=_make_delivery_callback(settings),
+    )
+    record_meeting = RecordMeetingUC(recorder=recorder)
 
     from agents.etl_agent import ETLAgent
     from agents.collection_agent import CollectionAgent
@@ -103,6 +106,13 @@ def _build_common(settings, repository) -> dict:
         repository=repository,
     ) if record_meeting else None
 
+    from infrastructure.pipeline.meeting_pipeline_orchestrator import MeetingPipelineOrchestrator
+    pipeline_orchestrator = MeetingPipelineOrchestrator(
+        repository=repository,
+        transcribe_uc=transcribe_meeting,
+        summarize_uc=summarize_meeting,
+    )
+
     return {
         "_transcriber":          transcriber,
         "_llm":                  llm,
@@ -118,6 +128,7 @@ def _build_common(settings, repository) -> dict:
         "collection_agent":      collection_agent,
         "memory_manager":        memory_manager,
         "orchestrator":          orchestrator,
+        "pipeline_orchestrator": pipeline_orchestrator,
     }
 
 
@@ -125,13 +136,14 @@ def _make_delivery_callback(settings):
     if getattr(settings, "app_mode", "solo") != "collab":
         return None
 
-    async def deliver(audio_path, speaker_log_path):
+    async def deliver(audio_path, speaker_log_path, caption_path=None):
         from worker.tasks import process_meeting_task
         meeting_id = audio_path.stem
         process_meeting_task.delay(
             meeting_id=meeting_id,
             audio_path=audio_path.as_posix(),
             title="",
+            caption_path=caption_path.as_posix() if caption_path else None,
         )
 
     return deliver
@@ -145,6 +157,8 @@ class SoloContainer:
     chat_with_meeting: ChatWithMeetingUC
     analyze_sentiment: AnalyzeSentimentUC
     fetch_meeting_context: FetchMeetingContextUC | None
+    collection_agent: CollectionAgent
+    pipeline_orchestrator: MeetingPipelineOrchestrator
 
     def __init__(self) -> None:
         settings   = get_settings()
@@ -153,13 +167,15 @@ class SoloContainer:
 
 
 class CollabContainer:
-    repository: JsonMeetingRepository
+    repository: MongoDBMeetingRepository
     record_meeting: Any | None
     transcribe_meeting: TranscribeMeetingUC
     summarize_meeting: SummarizeMeetingUC
     chat_with_meeting: ChatWithMeetingUC
     analyze_sentiment: AnalyzeSentimentUC
     fetch_meeting_context: FetchMeetingContextUC | None
+    collection_agent: CollectionAgent
+    pipeline_orchestrator: MeetingPipelineOrchestrator
 
     def __init__(self) -> None:
         import warnings

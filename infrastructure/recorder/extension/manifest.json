@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Meet Agent Capture",
+  "version": "1.0.0",
+  "description": "Captura de áudio da aba do Google Meet via tabCapture para o Meet Agent.",
+  "permissions": [
+    "tabCapture",
+    "offscreen",
+    "tabs",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://meet.google.com/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://meet.google.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "minimum_chrome_version": "116"
+}

@@ -49,3 +49,17 @@ bot_chrome_profile/
 # ── Distribuição ──────────────────────────────────────────────────────────
 *.zip.env
 data/collab.db
+
+# nio (config local do usuário)
+nio.user.json
+.esteira/runs/
+.esteira/tmp/
+.esteira/hooks/
+.esteira/heals/
+.esteira/backups/
+
+# ── Dados e artefatos locais ──────────────────────────────────────────────
+data/
+security_config.json
+security_audits/
+.qodo/

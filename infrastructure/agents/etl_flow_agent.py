@@ -120,7 +120,7 @@ class ETLFlowAgent:
         logger.info("[ETL Agent] Monitorando %s por novos áudios...", directory)
 
         while True:
-            for f in watch_dir.glob("*.webm"):
+            for f in list(watch_dir.glob("*.webm")) + list(watch_dir.glob("*.mkv")):
                 audio_path = str(f.resolve())
                 if audio_path not in processed:
                     processed.add(audio_path)

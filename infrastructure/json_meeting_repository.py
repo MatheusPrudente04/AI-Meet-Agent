@@ -21,12 +21,18 @@ class JsonMeetingRepository(IMeetingRepository):
         with open(self._base / f"{meeting.id}.json", "w", encoding="utf-8") as f:
             json.dump(self._serialize(meeting), f, ensure_ascii=False, indent=2)
 
+    async def save_async(self, meeting: Meeting) -> None:
+        self.save(meeting)
+
     def find_by_id(self, meeting_id: str) -> Optional[Meeting]:
         p = self._base / f"{meeting_id}.json"
         if not p.exists():
             return None
         with open(p, encoding="utf-8") as f:
             return self._deserialize(json.load(f))
+
+    async def find_by_id_async(self, meeting_id: str) -> Optional[Meeting]:
+        return self.find_by_id(meeting_id)
 
     def list_all(self) -> list[Meeting]:
         meetings = []
@@ -35,10 +41,16 @@ class JsonMeetingRepository(IMeetingRepository):
                 meetings.append(self._deserialize(json.load(fp)))
         return meetings
 
+    async def list_all_async(self) -> list[Meeting]:
+        return self.list_all()
+
     def delete(self, meeting_id: str) -> None:
         p = self._base / f"{meeting_id}.json"
         if p.exists():
             os.remove(p)
+
+    async def delete_async(self, meeting_id: str) -> None:
+        self.delete(meeting_id)
 
     def _serialize(self, m: Meeting) -> dict:
         data: dict = {

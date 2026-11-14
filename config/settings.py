@@ -77,10 +77,16 @@ class Settings(BaseSettings):
     faster_whisper_compute_type: str = "int8"
 
     # ── Bot de reunião ────────────────────────────────────────────────
-    recorder_provider: str = "none"
     bot_chrome_profile: str = "./bot_chrome_profile"
     bot_name: str = "Meet Agent"
     bot_headless: bool = False
+
+    # ── SMTP / E-mail ─────────────────────────────────────────────────
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = ""
 
     # ── Properties ───────────────────────────────────────────────────
 

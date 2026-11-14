@@ -162,7 +162,7 @@ class WhisperWithDiarization(ITranscriber):
         if not overlap_by_speaker:
             return "SPEAKER_00"
 
-        return max(overlap_by_speaker, key=overlap_by_speaker.get)
+        return max(overlap_by_speaker, key=lambda k: overlap_by_speaker.get(k, 0.0))
 
     @staticmethod
     def _build_diarizer() -> PyannoteDiarizer:

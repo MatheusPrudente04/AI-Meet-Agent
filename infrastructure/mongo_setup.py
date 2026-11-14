@@ -39,15 +39,16 @@ def init_mongo(mongo_uri: str, db_name: str) -> None:
     try:
         from beanie import init_beanie
 
-        _client = AsyncIOMotorClient(
+        client = AsyncIOMotorClient(
             mongo_uri,
             serverSelectionTimeoutMS=5000,
             connectTimeoutMS=5000,
         )
+        _client = client
 
         async def _init():
             await init_beanie(
-                database=_client[db_name],
+                database=client[db_name],
                 document_models=[
                     MeetingDocument,
                     SummaryDocument,
@@ -79,8 +80,7 @@ def shutdown_mongo() -> None:
 
     if _client:
         try:
-            loop = _get_loop()
-            loop.run_until_complete(_client.close())
+            _client.close()
         except Exception:
             pass
         _client = None

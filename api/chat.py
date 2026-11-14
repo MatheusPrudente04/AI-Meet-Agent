@@ -11,10 +11,10 @@ router = APIRouter()
 
 
 @router.post("/{meeting_id}/chat", response_model=ChatResponse)
-def chat(meeting_id: str, body: ChatRequest):
+async def chat(meeting_id: str, body: ChatRequest):
     """Responde pergunta sobre a reunião. Histórico gerenciado pelo cliente."""
     container = get_container()
-    meeting = container.repository.find_by_id(meeting_id)
+    meeting = await container.repository.find_by_id_async(meeting_id)
 
     if not meeting:
         raise HTTPException(404, "Reunião não encontrada")
@@ -26,7 +26,6 @@ def chat(meeting_id: str, body: ChatRequest):
             meeting=meeting,
             question=body.question,
             history=body.history,
-            request_user_id=body.request_user_id,
         )
     )
 
@@ -36,5 +35,4 @@ def chat(meeting_id: str, body: ChatRequest):
     return ChatResponse(
         answer=result.answer,
         meeting_id=meeting_id,
-        identified_user=getattr(result, "identified_user", None),
     )

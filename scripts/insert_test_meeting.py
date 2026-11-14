@@ -84,6 +84,7 @@ def main():
     print(f"    Duração: {DURATION} min")
 
     saved = col.find_one({"_id": MEETING_ID})
+    assert saved is not None, f"Documento '{MEETING_ID}' não encontrado após insert()"
     print(f"\n[VERIFICACAO]")
     print(f"    Titulo: {saved['title']}")
     print(f"    Transcript: {len(saved['transcript_text'])} chars")

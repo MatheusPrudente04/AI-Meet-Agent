@@ -16,7 +16,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config.settings import get_settings
-from api.routers import meetings
+from api.routers import meetings, capture
 from api import chat
 
 settings = get_settings()
@@ -37,6 +37,7 @@ app.add_middleware(
 
 app.include_router(meetings.router, prefix="/meetings", tags=["meetings"])
 app.include_router(chat.router, prefix="/meetings", tags=["chat"])
+app.include_router(capture.router, prefix="/capture", tags=["capture"])
 
 
 @app.on_event("startup")

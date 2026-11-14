@@ -1,20 +1,20 @@
 # Testes de integração completa
 import pytest
+import tempfile
+import json
 from pathlib import Path
 from domain.entities.meeting import Meeting, Summary, Task, Decision
 from domain.entities.meeting_type import MeetingType
+from domain.entities.transcript import Transcript, Segment
+from interface.llm_services import ILLMService
+from interface.transcriber import ITranscriber
 from use_cases.transcribe_meeting import TranscribeMeetingUC, TranscribeMeetingInput
 from use_cases.summarize_meeting import SummarizeMeetingUC, SummarizeMeetingInput
 from use_cases.chat_with_meeting import ChatWithMeetingUC, ChatWithMeetingInput
-from domain.entities.transcript import Transcript, Segment
 from infrastructure.json_meeting_repository import JsonMeetingRepository
-from datetime import datetime
-from pathlib import Path
-import tempfile
-import json
 
 
-class MockTranscriber:
+class MockTranscriber(ITranscriber):
     """Mock de transcritor para testes"""
     def transcribe(self, audio_path: str) -> Transcript:
         return Transcript(
@@ -30,7 +30,7 @@ class MockTranscriber:
         return self.transcribe(audio_path)
 
 
-class MockLLMService:
+class MockLLMService(ILLMService):
     """Mock de LLM service para testes"""
 
     # FIX: assinatura corrigida — ILLMService.summarize exige meeting_type
@@ -47,7 +47,7 @@ class MockLLMService:
             ]
         )
 
-    def chat(self, question: str, context: str, history: list, **kwargs) -> str:
+    def chat(self, question: str, context: str, history: list[dict], summary_context: str = "", user_id: str | None = None) -> str:
         question_lower = question.lower()
 
         if "quem" in question_lower or "responsável" in question_lower:
@@ -166,6 +166,7 @@ class TestEndToEndWorkflow:
             assert len(all_meetings) == 2
 
             found = repo.find_by_id("meeting_1")
+            assert found is not None
             assert found.title == "Reunião 1"
 
             repo.delete("meeting_1")
@@ -258,6 +259,8 @@ class TestDataConsistency:
 
             loaded = repo.find_by_id("test")
 
+            assert loaded is not None
+            assert loaded.summary is not None
             assert loaded.summary.overview == original_summary.overview
             assert loaded.summary.topics == original_summary.topics
             assert len(loaded.summary.tasks) == len(original_summary.tasks)

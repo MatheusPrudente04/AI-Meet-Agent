@@ -33,7 +33,7 @@ def pick_device_and_compute():
 class WhisperTranscriber(ITranscriber):
     """Transcritor usando OpenAI Whisper API."""
 
-    SUPPORTED_FORMATS = {".wav", ".mp3", ".mp4", ".m4a", ".webm", ".ogg", ".flac"}
+    SUPPORTED_FORMATS = {".wav", ".mp3", ".mp4", ".m4a", ".webm", ".mkv", ".ogg", ".flac"}
 
     def __init__(
         self,
@@ -161,7 +161,7 @@ class WhisperLocalTranscriber(ITranscriber):
       - Pré-processamento de áudio (ffmpeg denoise + loudnorm)
     """
 
-    SUPPORTED_FORMATS = {".wav", ".mp3", ".mp4", ".m4a", ".webm", ".ogg", ".flac"}
+    SUPPORTED_FORMATS = {".wav", ".mp3", ".mp4", ".m4a", ".webm", ".mkv", ".ogg", ".flac"}
 
     def __init__(
         self,
@@ -256,7 +256,7 @@ class WhisperLocalTranscriber(ITranscriber):
                 full_text=full_text,
                 segments=segments_entities,
                 language=info.language or self._language or "pt",
-                audio_path=wav_path,
+                audio_path=str(wav_path),
             )
 
             if wav_path.suffix == ".clean.wav":

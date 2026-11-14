@@ -25,7 +25,7 @@ class SummaryEmbedded(BaseModel):
 
 
 class MeetingDocument(Document):
-    id: str
+    id: Optional[str] = None  # type: ignore[assignment]
     title: str
     started_at: datetime = Field(default_factory=datetime.now)
     audio_path: Optional[str] = None

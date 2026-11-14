@@ -444,6 +444,8 @@ async def main():
 
     # Verify
     saved = await MeetingDocument.get(r["id"])
+    assert saved is not None, f"Documento '{r['id']}' não encontrado após save()"
+    assert saved.summary is not None, "Summary ausente após save()"
     print(f"[CHECK] {saved.title} -- {len(saved.participants)} participantes")
     print(f"   Summary: {saved.summary.overview[:60]}...")
     print(f"   Tarefas: {len(saved.summary.tasks)}  Decisoes: {len(saved.summary.decisions)}")

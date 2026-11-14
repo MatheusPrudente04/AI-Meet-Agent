@@ -118,7 +118,7 @@ def render_extra_sections(summary) -> None:
     if not summary or not getattr(summary, "extra_sections", None):
         return
     for key, value in summary.extra_sections.items():
-        emoji = _SECTION_EMOJI.get(key, "📌")
+        emoji = _SECTION_EMOJI.get(key, "")
         label = _SECTION_LABELS.get(key, key.replace("_", " ").title())
         st.markdown(f"### {emoji} {label}")
         if isinstance(value, str):
@@ -203,7 +203,7 @@ with st.sidebar:
 
         for m in all_meetings:
             is_new = m.id in new_ids
-            prefix = "🆕 " if is_new else "📋 "
+            prefix = " " if is_new else " "
             label = m.title[:30] + ("..." if len(m.title) > 30 else "")
             if st.button(f"{prefix}{label}", key=f"load_{m.id}", use_container_width=True):
                 st.session_state.meeting = m
@@ -235,7 +235,7 @@ if st.session_state.page == "meetings":
             title = st.text_input("Título", placeholder="Sprint Planning — Semana 22")
             audio_file = st.file_uploader(
                 "Arquivo de áudio",
-                type=["wav", "mp3", "m4a", "webm", "ogg"],
+                type=["wav", "mp3", "m4a", "webm", "mkv", "ogg"],
             )
             use_diarization = st.toggle("Identificar speakers", value=True)
 
@@ -487,7 +487,7 @@ elif st.session_state.page == "chat":
                     )
                     answer = result.answer if result.success else f"⚠️ {result.error_message}"
                 except Exception as e:
-                    answer = f"❌ Erro: {str(e)}"
+                    answer = f" Erro: {str(e)}"
                     result = None
 
             placeholder.write(answer)
@@ -500,11 +500,11 @@ elif st.session_state.page == "chat":
                 try:
                     container.repository.save(chat_meeting)
                     for new_task in result.extracted_tasks:
-                        st.success(f"✅ Tarefa criada: {new_task.description} "
+                        st.success(f"Tarefa criada: {new_task.description} "
                                    f"— {new_task.responsible}"
                                    + (f" · {new_task.deadline}" if new_task.deadline else ""))
-                    st.toast(f"📌 {len(result.extracted_tasks)} tarefa(s) "
-                             "salva(s) na reunião!", icon="✅")
+                    st.toast(f" {len(result.extracted_tasks)} tarefa(s) "
+                             "salva(s) na reunião!", icon="")
                 except Exception as e:
                     st.warning(f"Tarefa extraída, mas falhou ao salvar: {e}")
 

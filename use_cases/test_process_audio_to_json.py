@@ -23,7 +23,7 @@ from use_cases.summarize_meeting import SummarizeMeetingInput
 from use_cases.chat_with_meeting import ChatWithMeetingInput
 
 
-def process_audio_to_json(audio_path: str, output_json: str = None) -> dict:
+def process_audio_to_json(audio_path: str, output_json: str | None = None) -> tuple[dict, Meeting]:
     """
     Processa áudio completo e retorna JSON estruturado.
     
@@ -130,7 +130,7 @@ def interactive_chat(meeting):
     container = get_container()
     history = []
     
-    print("\n💬 Chat ativo — Pergunte sobre a reunião")
+    print("\n Chat ativo — Pergunte sobre a reunião")
     print("   (Digite 'sair' ou pressione Ctrl+C para encerrar)\n")
     
     while True:
@@ -138,7 +138,7 @@ def interactive_chat(meeting):
             question = input("Você: ").strip()
             
             if question.lower() in ["sair", "exit", "quit"]:
-                print("\n✅ Chat encerrado. Até logo!")
+                print("\n Chat encerrado. Até logo!")
                 break
                 
             if not question:
@@ -153,14 +153,14 @@ def interactive_chat(meeting):
             )
             
             if c_result.success:
-                print(f"\n🤖 Agente: {c_result.answer}\n")
+                print(f"\n Agente: {c_result.answer}\n")
                 history.append({"role": "user", "content": question})
                 history.append({"role": "assistant", "content": c_result.answer})
             else:
-                print(f"\n❌ Erro: {c_result.error_message}\n")
+                print(f"\n Erro: {c_result.error_message}\n")
         
         except KeyboardInterrupt:
-            print("\n\n✅ Chat interrompido. Até logo!")
+            print("\n\n Chat interrompido. Até logo!")
             break
 
 
@@ -191,5 +191,5 @@ if __name__ == "__main__":
     if not args.no_chat:
         interactive_chat(meeting)
     else:
-        print("\n📄 JSON processado. Nenhum chat aberto (use sem --no-chat para chat).")
-        print(f"\n📋 Resumo:\n{meeting.summary.formatted if meeting.summary else 'N/A'}")
+        print("\n JSON processado. Nenhum chat aberto (use sem --no-chat para chat).")
+        print(f"\n Resumo:\n{meeting.summary.formatted if meeting.summary else 'N/A'}")

@@ -1,18 +1,18 @@
 """
 bot_setup.py — Autenticacao automatica do bot (rodar UMA unica vez).
 
-Usa undetected-chromedriver para fazer login sem ser bloqueado pelo Google.
-O perfil salvo em bot_chrome_profile e reutilizado pelo Playwright nas
-execucoes seguintes (S1).
+Usa Playwright para fazer login no Google e salvar o perfil com a sessao
+autenticada. O perfil salvo em bot_chrome_profile e reutilizado pelo
+Playwright nas execucoes seguintes.
 """
+import asyncio
 import os
 import sys
-import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 
-def main():
+async def main():
     from dotenv import load_dotenv
     load_dotenv()
 
@@ -26,10 +26,7 @@ def main():
         print("   BOT_GOOGLE_PASSWORD=sua_senha")
         sys.exit(1)
 
-    import undetected_chromedriver as uc
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
+    from playwright.async_api import async_playwright
 
     print("\nMeet Agent Bot - Setup de autenticacao")
     print(f"   Email: {email}")
@@ -38,60 +35,87 @@ def main():
 
     os.makedirs(profile_dir, exist_ok=True)
 
-    options = uc.ChromeOptions()
-    options.add_argument(f"--user-data-dir={os.path.abspath(profile_dir)}")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-
-    driver = uc.Chrome(options=options)
-    driver.set_page_load_timeout(30)
-
-    try:
-        print("\nNavegando para login do Google...")
-        driver.get("https://accounts.google.com/signin")
-        time.sleep(2)
-
-        print("Preenchendo email...")
-        email_field = WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="email"]'))
+    async with async_playwright() as pw:
+        context = await pw.chromium.launch_persistent_context(
+            user_data_dir=os.path.abspath(profile_dir),
+            headless=False,
+            channel="chrome",
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+            ],
         )
-        email_field.send_keys(email)
-        time.sleep(0.5)
-        driver.find_element(By.ID, "identifierNext").click()
-        time.sleep(3)
 
-        print("Preenchendo senha...")
-        password_field = WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="password"]'))
-        )
-        password_field.send_keys(password)
-        time.sleep(0.5)
-        driver.find_element(By.ID, "passwordNext").click()
-        time.sleep(3)
+        page = context.pages[0] if context.pages else await context.new_page()
 
-        print("\nAguardando conclusao do login...")
-        wait = WebDriverWait(driver, 180)
-        wait.until(lambda d: "myaccount.google.com" in d.current_url or
-                  ("google.com" in d.current_url and "signin" not in d.current_url))
-
-        print("Login realizado com sucesso!")
-        print(f"Perfil salvo em: {profile_dir}")
-
-    except Exception as e:
-        print(f"\nAtencao - Erro na automacao: {e}")
-        print("   O navegador pode ter solicitado verificacao em 2 etapas.")
-        print("   Complete manualmente e pressione Enter...")
         try:
-            input()
-        except EOFError:
-            pass
-        print("Continuando...")
+            print("\nNavegando para login do Google...")
+            await page.goto("https://accounts.google.com/signin", wait_until="domcontentloaded")
+            await asyncio.sleep(3)
 
-    finally:
-        time.sleep(2)
-        driver.quit()
-        print("Browser fechado. Perfil pronto para uso.")
+            # Se houver seletor de conta, clica "Usar outra conta"
+            try:
+                outra_conta = page.locator(
+                    '[jsname="dRO4D"], text="Usar outra conta", text="Use another account"'
+                )
+                if await outra_conta.first.is_visible(timeout=3000):
+                    await outra_conta.first.click()
+                    await asyncio.sleep(1)
+            except Exception:
+                pass
+
+            print("Preenchendo email...")
+            email_field = page.locator('input[type="email"], #identifierId')
+            await email_field.first.wait_for(timeout=15000)
+            await email_field.first.fill(email)
+            await asyncio.sleep(1)
+            await page.keyboard.press("Enter")
+            await asyncio.sleep(3)
+
+            print("Preenchendo senha...")
+            pw_field = page.locator('input[type="password"]')
+            await pw_field.first.wait_for(timeout=15000)
+            await pw_field.first.fill(password)
+            await asyncio.sleep(1)
+            await page.keyboard.press("Enter")
+
+            print("\nAguardando conclusao do login...")
+            for _ in range(180):
+                current_url = page.url
+                if "myaccount.google.com" in current_url or (
+                    "google.com" in current_url and "signin" not in current_url
+                ):
+                    break
+                await asyncio.sleep(1)
+            else:
+                raise TimeoutError("Tempo limite excedido aguardando login")
+
+            print("Login realizado com sucesso!")
+            print(f"Perfil salvo em: {profile_dir}")
+
+        except TimeoutError:
+            print("\nTempo limite excedido.")
+            print("   Complete o login manualmente e pressione Enter...")
+            try:
+                input()
+            except EOFError:
+                pass
+            print("Continuando...")
+
+        except Exception as e:
+            print(f"\nAtencao - Erro na automacao: {e}")
+            print("   O navegador pode ter solicitado verificacao em 2 etapas.")
+            print("   Complete manualmente e pressione Enter...")
+            try:
+                input()
+            except EOFError:
+                pass
+            print("Continuando...")
+
+        finally:
+            await context.close()
+            print("Browser fechado. Perfil pronto para uso.")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

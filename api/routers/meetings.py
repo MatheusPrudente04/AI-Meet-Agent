@@ -15,7 +15,6 @@ from api.schemas.meeting import (
 from config.settings import get_settings
 from presentation.container import get_container
 
-# FIX: rotas registradas na ordem correta para evitar conflito no FastAPI.
 # GET "/" e POST "/bot/done" devem vir ANTES de GET "/{meeting_id}/status",
 # caso contrário o FastAPI interpreta "bot" e "done" como meeting_id.
 router = APIRouter()
@@ -51,9 +50,9 @@ def _get_status(meeting_id: str) -> ProcessingStatus | None:
 # ── Rotas sem path param — DEVEM vir antes de /{meeting_id}/... ──────────
 
 @router.get("/", response_model=list[MeetingStatusResponse])
-def list_meetings():
+async def list_meetings():
     container = get_container()
-    meetings = container.repository.list_all()
+    meetings = await container.repository.list_all_async()
     return [
         MeetingStatusResponse(
             meeting_id=m.id,
@@ -131,26 +130,13 @@ async def send_bot_to_meeting(body: SendBotRequest):
     from use_cases.record_meeting import SendBotInput
     meeting_id = str(uuid.uuid4())
 
-    def on_meeting_finished(
-        audio_path: str,
-        meeting_title: str,
-        participant_info: dict[str, str],
-        speaker_observations: list[dict[str, float | str]],
-        mid: str,
-    ) -> None:
-        _process_bot_audio(
-            mid,
-            audio_path,
-            meeting_title,
-            participant_info,
-            speaker_observations,
-        )
+    def on_meeting_finished(audio_path: str, meeting_title: str) -> None:
+        _process_bot_audio(meeting_id, audio_path, meeting_title)
 
     result = container.record_meeting.send_bot(
         SendBotInput(
             meeting_url=body.meeting_url,
             title=body.title,
-            meeting_id=meeting_id,
             on_finished=on_meeting_finished,
         )
     )
@@ -212,10 +198,10 @@ def get_bot_status(session_id: str):
 # ── Rotas com path param — DEVEM vir depois das rotas fixas ──────────────
 
 @router.get("/{meeting_id}/status", response_model=MeetingStatusResponse)
-def get_status(meeting_id: str):
+async def get_status(meeting_id: str):
     """Retorna status e dados da reunião."""
     container = get_container()
-    meeting = container.repository.find_by_id(meeting_id)
+    meeting = await container.repository.find_by_id_async(meeting_id)
 
     if not meeting:
         status = _get_status(meeting_id)

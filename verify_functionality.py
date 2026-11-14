@@ -88,7 +88,7 @@ class ProjectValidator:
         """Check if critical files exist"""
         print("📄 Checking Critical Files...\n")
 
-        critical_files = [                              # ← corrigido (era crcritical_files)
+        critical_files = [                              
             # Entrada
             "main.py",
 
@@ -122,7 +122,8 @@ class ProjectValidator:
             "infrastructure/llm/sentiment_analyzer.py",
             "infrastructure/recorder/playwright_bot_recorder.py",
             "infrastructure/recorder/run_bot.py",
-            "infrastructure/recorder/audio_capture.js",
+            "infrastructure/recorder/extension/background.js",
+            "infrastructure/recorder/extension/offscreen.js",
             "infrastructure/exporters/markdown_exporter.py",
             "infrastructure/calendar/google_calendar_service.py",
 

@@ -15,19 +15,24 @@ from infrastructure.mongodb_documents import (
 from repositories.meeting_repository import IMeetingRepository
 
 
-_loop: asyncio.AbstractEventLoop | None = None
-
-
-def _get_loop() -> asyncio.AbstractEventLoop:
-    global _loop
-    if _loop is None or _loop.is_closed():
-        _loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(_loop)
-    return _loop
-
-
 def _run_async(coro):
-    return _get_loop().run_until_complete(coro)
+    """Executa corrotina de forma síncrona, compatível com uvicorn/FastAPI e Streamlit.
+
+    Regras:
+    - Loop ativo (FastAPI/uvicorn): roda em thread separada com asyncio.run()
+      para evitar 'Cannot run the event loop while another loop is running'.
+    - Sem loop (Streamlit, CLI, testes): roda em thread separada com asyncio.run().
+
+    Por que sempre usar thread separada:
+    asyncio.run() cria um novo event loop e o FECHA ao terminar. O motor client
+    do Beanie fica vinculado ao loop em que foi criado. Se chamado diretamente no
+    main thread, o motor client do call anterior aponta para um loop fechado e
+    qualquer call seguinte lança 'Event loop is closed'. Rodar em thread própria
+    garante que cada call tem seu próprio loop isolado do anterior.
+    """
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
 
 
 def _task_to_embedded(t: Task) -> TaskEmbedded:
@@ -81,7 +86,7 @@ def _doc_to_entity(doc: MeetingDocument) -> Meeting:
     if doc.summary:
         summary = _embedded_to_summary(doc.summary)
     return Meeting(
-        id=doc.id,
+        id=doc.id or "",
         title=doc.title,
         started_at=doc.started_at,
         audio_path=doc.audio_path,
@@ -118,37 +123,82 @@ class MongoDBMeetingRepository(IMeetingRepository):
         self._db_name = db_name
         self._initialized = False
 
-    def _ensure_init(self):
-        if not self._initialized:
-            _run_async(self._init_beanie())
-            self._initialized = True
+    # ── Init ────────────────────────────────────────────────────────────────
 
-    async def _ensure_init_async(self):
-        if not self._initialized:
-            await self._init_beanie()
-            self._initialized = True
+    async def _init_beanie(self) -> None:
+        """Cria motor client e inicializa Beanie no event loop corrente.
 
-    async def _init_beanie(self):
-        if MeetingDocument._document_settings is not None:
-            self._initialized = True
-            return
+        Chamado DENTRO de cada corrotina (mesmo loop que vai fazer as queries).
+        Não pode ser separado em outro asyncio.run() — o motor client fica
+        vinculado ao loop em que foi criado.
+        """
         client = AsyncIOMotorClient(self._uri)
         await init_beanie(
             database=client[self._db_name],
             document_models=[MeetingDocument],
         )
 
+    async def _ensure_init_async(self) -> None:
+        """Para o caminho async (FastAPI): inicializa uma única vez no loop do ASGI."""
+        if not self._initialized:
+            await self._init_beanie()
+            self._initialized = True
+
+    def _run_sync(self, coro):
+        """Executa coro síncrono: init + operação no MESMO asyncio.run() → mesmo loop."""
+        return _run_async(coro)
+
+    # ── Sync (Streamlit / CLI / worker thread) ───────────────────────────────
+    # Cada método síncrono empacota init + operação em UMA corrotina só,
+    # garantindo que o motor client seja criado no mesmo loop da query.
+
     def save(self, meeting: Meeting) -> None:
-        self._ensure_init()
-        _run_async(self._save(meeting))
+        async def _coro():
+            await self._init_beanie()
+            await self._save(meeting)
+        self._run_sync(_coro())
+
+    def find_by_id(self, meeting_id: str) -> Optional[Meeting]:
+        async def _coro():
+            await self._init_beanie()
+            return await self._find_by_id(meeting_id)
+        return self._run_sync(_coro())
+
+    def list_all(self) -> list[Meeting]:
+        async def _coro():
+            await self._init_beanie()
+            return await self._list_all()
+        return self._run_sync(_coro())
+
+    def delete(self, meeting_id: str) -> None:
+        async def _coro():
+            await self._init_beanie()
+            await self._delete(meeting_id)
+        self._run_sync(_coro())
+
+    # ── Async (FastAPI / scripts) ────────────────────────────────────────────
+
+    async def save_async(self, meeting: Meeting) -> None:
+        await self._ensure_init_async()
+        await self._save(meeting)
+
+    async def find_by_id_async(self, meeting_id: str) -> Optional[Meeting]:
+        await self._ensure_init_async()
+        return await self._find_by_id(meeting_id)
+
+    async def list_all_async(self) -> list[Meeting]:
+        await self._ensure_init_async()
+        return await self._list_all()
+
+    async def delete_async(self, meeting_id: str) -> None:
+        await self._ensure_init_async()
+        await self._delete(meeting_id)
+
+    # ── Operações internas ───────────────────────────────────────────────────
 
     async def _save(self, meeting: Meeting):
         doc = _entity_to_doc(meeting)
         await doc.save()
-
-    def find_by_id(self, meeting_id: str) -> Optional[Meeting]:
-        self._ensure_init()
-        return _run_async(self._find_by_id(meeting_id))
 
     async def _find_by_id(self, meeting_id: str) -> Optional[Meeting]:
         doc = await MeetingDocument.get(meeting_id)
@@ -156,17 +206,9 @@ class MongoDBMeetingRepository(IMeetingRepository):
             return None
         return _doc_to_entity(doc)
 
-    def list_all(self) -> list[Meeting]:
-        self._ensure_init()
-        return _run_async(self._list_all())
-
     async def _list_all(self) -> list[Meeting]:
-        docs = await MeetingDocument.find_all().sort(-MeetingDocument.started_at).to_list()
+        docs = await MeetingDocument.find_all().sort("-started_at").to_list()
         return [_doc_to_entity(d) for d in docs]
-
-    def delete(self, meeting_id: str) -> None:
-        self._ensure_init()
-        _run_async(self._delete(meeting_id))
 
     async def _delete(self, meeting_id: str):
         doc = await MeetingDocument.get(meeting_id)
