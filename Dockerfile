@@ -1,41 +1,18 @@
-# ── Imagem base ───────────────────────────────────────────────────────────
+# Imagem única para api, worker e streamlit; o comando de cada serviço vem do compose.
+# O bot não roda aqui: ele usa o Chromium do host, onde está o login do Google (ADR-006).
 FROM python:3.11-slim
 
-# Evita prompts interativos durante o build
-ENV DEBIAN_FRONTEND=noninteractive
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
-# ── Dependências de sistema ───────────────────────────────────────────────
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    gcc \
-    portaudio19-dev \
-    ffmpeg \
-    libsndfile1 \
-    curl \
-    && apt-get clean \
-    && find /var/lib/apt/lists -mindepth 1 -delete
-
-# ── Diretório de trabalho ─────────────────────────────────────────────────
 WORKDIR /app
 
-# ── Dependências Python ───────────────────────────────────────────────────
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
-RUN playwright install chromium
-# ── Código da aplicação ───────────────────────────────────────────────────
-COPY . .
 
-# ── Cria pastas de dados ──────────────────────────────────────────────────
+COPY . .
 RUN mkdir -p data/meetings data/audio
 
-# ── Porta padrão FastAPI ──────────────────────────────────────────────────
-EXPOSE 8000
+EXPOSE 8000 8501
 
-# ── Healthcheck ───────────────────────────────────────────────────────────
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
-
-# ── Entrypoint ────────────────────────────────────────────────────────────
 CMD ["python", "main.py", "--api"]

@@ -2,6 +2,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from api.schemas.meeting import (
     DecisionSchema, MeetingStatusResponse, SummarySchema, TaskSchema, UploadResponse,
@@ -33,6 +34,37 @@ def upload_meeting(file: UploadFile = File(...), title: str = "Reunião sem tít
         meeting_id=meeting_id,
         status=MeetingStatus.PENDING,
         message="Áudio recebido. Processamento iniciado.",
+    )
+
+
+class SendBotRequest(BaseModel):
+    meeting_url: str
+    title: str = "Reunião"
+
+
+@router.post("/bot", response_model=UploadResponse)
+def send_bot(body: SendBotRequest):
+    """Enfileira o bot para entrar na reunião. Responde na hora com o id."""
+    try:
+        meeting_id = get_container().dispatch_bot(body.meeting_url, body.title)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    return UploadResponse(
+        meeting_id=meeting_id, status=MeetingStatus.PENDING, message="Bot enviado para a reunião.",
+    )
+
+
+@router.post("/{meeting_id}/process", response_model=UploadResponse)
+def reprocess(meeting_id: str):
+    """Reprocessa o áudio já gravado (após erro, ou se o bot caiu no meio)."""
+    meeting = get_container().repository.find_by_id(meeting_id)
+    if not meeting:
+        raise HTTPException(404, "Reunião não encontrada")
+    if not meeting.audio_path or not Path(meeting.audio_path).exists():
+        raise HTTPException(409, "Reunião sem áudio gravado")
+    get_container().enqueue_processing(meeting_id, meeting.audio_path, meeting.title)
+    return UploadResponse(
+        meeting_id=meeting_id, status=MeetingStatus.PENDING, message="Reprocessamento iniciado.",
     )
 
 

@@ -5,7 +5,8 @@ Modos de uso:
   streamlit run main.py              → Interface web Streamlit
   python main.py --test <audio.wav>  → Teste via terminal (sem UI)
   python main.py --api               → Sobe FastAPI via uvicorn
-  python main.py --worker            → Sobe Celery worker
+  python main.py --worker            → Sobe o worker de processamento (Celery)
+  python main.py --bot-worker        → Sobe o worker do bot (fila "bot", uma reunião por vez)
 """
 
 import sys
@@ -41,17 +42,20 @@ def run_api() -> None:
     )
 
 
-def run_worker() -> None:
-    """Sobe o Celery worker."""
+def run_worker(bot: bool = False) -> None:
+    """Sobe um worker Celery: processamento (padrão) ou bot."""
     cmd = [
         sys.executable, "-m", "celery",
         "-A", "worker.tasks.celery_app",
         "worker",
         "--loglevel=info",
     ]
-    # Windows não suporta o pool padrão (prefork); solo roda tudo na thread principal
-    if sys.platform == "win32":
-        cmd += ["--pool=solo"]
+    if bot:
+        # pool=solo: o navegador roda no processo principal, uma reunião por vez
+        cmd += ["-Q", "bot", "--pool=solo", "-n", "bot@%h"]
+    else:
+        # solo também aqui: o Whisper carrega o modelo uma vez e não convive bem com fork
+        cmd += ["-Q", "celery", "--pool=solo", "-n", "worker@%h"]
     subprocess.run(cmd, check=True)
 
 
@@ -161,6 +165,8 @@ if __name__ == "__main__":
         run_terminal_test(sys.argv[idx + 1])
     elif "--api" in sys.argv:
         run_api()
+    elif "--bot-worker" in sys.argv:
+        run_worker(bot=True)
     elif "--worker" in sys.argv:
         run_worker()
     else:

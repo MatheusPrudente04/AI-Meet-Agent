@@ -177,6 +177,7 @@ class LangChainLLMService(ILLMService):
                     deadline=t.get("deadline", "Não definido"),
                 )
                 for t in data.get("tasks", [])
+                if (t.get("description") or "").strip()  # o modelo às vezes devolve item vazio
             ]
 
             decisions = [
@@ -185,6 +186,7 @@ class LangChainLLMService(ILLMService):
                     context=d.get("context", ""),
                 )
                 for d in data.get("decisions", [])
+                if (d.get("description") or "").strip()
             ]
 
             return Summary(

@@ -40,3 +40,9 @@ bot_chrome_profile/
 .vscode/
 .idea/
 *.swp
+# Ambiente local e artefatos
+venv/
+.venv/
+.esteira/
+docs/
+test/

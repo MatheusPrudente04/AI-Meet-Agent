@@ -16,10 +16,9 @@ import time
 from pathlib import Path
 from typing import Any, Coroutine, TypeVar
 
-from dotenv import load_dotenv
-
 _T = TypeVar("_T")
-load_dotenv()
+# O teste vivo só roda com MEET_TEST_URL exportada no shell. Não carregamos o
+# .env aqui: um `pytest` comum não pode mandar o bot para uma reunião real.
 
 import pytest
 

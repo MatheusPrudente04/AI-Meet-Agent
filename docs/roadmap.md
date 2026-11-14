@@ -46,13 +46,22 @@ aparece como erro na UI.
 
 ## Sprint 2 — Bot em produção (ADR-006)
 
+**Implementada em 2026-11-14; falta o critério de saída** (três reuniões reais pelo fluxo da fila).
+Validado: compose completo no ar, upload real processado no container até `done`, fila `bot`
+entregando ao worker do host e falha persistida. S2-6 (teste de fumaça) não foi feita.
+
+Como subir:
+
+    docker compose up -d --build        # api :8001, streamlit :8501, redis :6380, mongo :27018
+    python main.py --bot-worker         # no host, em outro terminal
+
 Objetivo: URL do Meet entra, reunião resumida sai, sem intervenção e sem bloquear nada.
 
 | Id | Tipo | Tarefa | Pronto quando |
 |----|------|--------|---------------|
 | S2-1 | feat | Task `join_meeting` na fila `bot`; `meeting_id` criado no despacho e usado como sessão de captura | `POST /meetings/bot` responde em menos de 1 s com o id |
 | S2-2 | refactor | Recorder recebe o id e o endpoint de captura por parâmetro; grava `started_at` real; atualiza status | Documento passa por `recording` → `transcribing` → `summarizing` → `done` |
-| S2-3 | feat | Imagem e serviço `bot-worker` (Chrome + Xvfb, perfil em volume, concorrência 1) | Bot grava uma reunião rodando dentro do container |
+| S2-3 | feat | Worker do bot na fila `bot`, concorrência 1. **No host por enquanto** (ver ADR-006); container fica para quando houver servidor | Bot grava uma reunião despachada pela fila |
 | S2-4 | refactor | Streamlit despacha pela fila e mostra status do documento; remover subprocesso e leitura de `bot_session_*.json` | UI mostra o andamento sem Refresh manual do processo |
 | S2-5 | fix | Encerramento: áudio parcial é processado quando o bot cai ou recebe SIGTERM | Matar o container no meio da reunião ainda gera resumo do que foi gravado |
 | S2-6 | feat | Teste de fumaça do bot contra uma reunião de teste, executável sob demanda | Um comando valida entrar, gravar 30 s e sair |

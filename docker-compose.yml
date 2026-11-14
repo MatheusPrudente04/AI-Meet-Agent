@@ -1,114 +1,79 @@
-version: "3.9"
+# Meet Agent — produção local (APP_MODE=collab).
+#
+#   docker compose up -d --build          → mongo, redis, api, worker, streamlit
+#   python main.py --bot-worker           → no host: o bot usa o Chromium e o login do Google locais
+#
+# Portas no host: API 8001, Streamlit 8501, Redis 6380, Mongo 27018
+# (fora das portas padrão para não colidir com serviços já instalados na máquina).
 
-# ─────────────────────────────────────────────────────────────────────────
-# Meet Agent — docker-compose
-#
-# Modo solo  (padrão):
-#   docker-compose up streamlit
-#
-# Modo collab (servidor completo):
-#   docker-compose --profile collab up
-# ─────────────────────────────────────────────────────────────────────────
+x-app: &app
+  build: .
+  image: meet-agent
+  env_file: .env
+  environment: &app-env
+    APP_MODE: collab
+    TZ: America/Sao_Paulo   # mesmo fuso do host: o bot grava started_at fora do container
+    API_PORT: "8000"
+    MONGO_URI: mongodb://mongo:27017
+    REDIS_URL: redis://redis:6379/0
+    OLLAMA_BASE_URL: http://host.docker.internal:11434/v1
+    CAPTURE_ENDPOINT: ""
+  volumes:
+    - ./data:/app/data
+    - model_cache:/root/.cache/huggingface
+  depends_on:
+    redis:
+      condition: service_healthy
+    mongo:
+      condition: service_healthy
+  restart: unless-stopped
 
 services:
-
-  # ── Streamlit — interface web ─────────────────────────────────────────
-  streamlit:
-    build:
-      context: .
-      dockerfile: Dockerfile.streamlit
+  api:
+    <<: *app
+    command: python main.py --api
     ports:
-      - "8501:8501"
-    env_file: .env
-    environment:
-      - APP_MODE=collab
-      - MONGO_URI=mongodb://mongo:27017/meetagent
-    volumes:
-      - ./data:/app/data
-    restart: unless-stopped
+      - "8001:8000"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
 
-  # ── FastAPI — backend colaborativo ────────────────────────────────────
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
-    env_file: .env
-    environment:
-      - APP_MODE=collab
-      - MONGO_URI=mongodb://mongo:27017/meetagent
-      - REDIS_URL=redis://redis:6379/0
-      - OLLAMA_BASE_URL=http://ollama:11434/v1
-    volumes:
-      - ./data:/app/data
-    depends_on:
-      redis:
-        condition: service_healthy
-      mongo:
-        condition: service_healthy
-    restart: unless-stopped
-    profiles: ["collab"]
-
-  # ── Celery worker — processamento assíncrono ──────────────────────────
   worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *app
     command: python main.py --worker
-    env_file: .env
-    environment:
-      - APP_MODE=collab
-      - MONGO_URI=mongodb://mongo:27017/meetagent
-      - REDIS_URL=redis://redis:6379/0
-      - OLLAMA_BASE_URL=http://ollama:11434/v1
-    volumes:
-      - ./data:/app/data
-    depends_on:
-      redis:
-        condition: service_healthy
-      mongo:
-        condition: service_healthy
-      api:
-        condition: service_started
-    restart: unless-stopped
-    profiles: ["collab"]
-    healthcheck:
-      disable: true
-    deploy:
-      replicas: 2
 
-  # ── Redis — broker do Celery ──────────────────────────────────────────
+  streamlit:
+    <<: *app
+    command: >
+      streamlit run presentation/streamlit/app.py
+      --server.port=8501 --server.address=0.0.0.0 --server.headless=true
+    ports:
+      - "8501:8501"
+
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redis_data:/data
     restart: unless-stopped
-    profiles: ["collab"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # ── MongoDB — banco colaborativo ─────────────────────────────────────
   mongo:
     image: mongo:7
     ports:
-      - "27017:27017"
+      - "27018:27017"
     volumes:
       - mongo_data:/data/db
     restart: unless-stopped
-    profiles: ["collab"]
     healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh --quiet
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand('ping').ok"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -116,3 +81,4 @@ services:
 volumes:
   redis_data:
   mongo_data:
+  model_cache:

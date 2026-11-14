@@ -68,6 +68,8 @@ class Settings(BaseSettings):
     bot_chrome_profile: str = "./bot_chrome_profile"
     bot_name: str = "Meet Agent"
     bot_headless: bool = False
+    # Endereço da API visto pelo navegador do bot (vazio = http://127.0.0.1:API_PORT)
+    capture_endpoint: str = ""
 
     # ── SMTP / E-mail ─────────────────────────────────────────────────
     smtp_host: str = "smtp.gmail.com"
@@ -93,6 +95,10 @@ class Settings(BaseSettings):
     @property
     def is_ollama(self) -> bool:
         return self.llm_provider == "ollama"
+
+    @property
+    def capture_url(self) -> str:
+        return self.capture_endpoint or f"http://127.0.0.1:{self.api_port}"
 
     @property
     def use_local_whisper(self) -> bool:

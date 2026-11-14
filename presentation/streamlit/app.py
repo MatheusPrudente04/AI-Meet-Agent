@@ -10,7 +10,7 @@ Telas:
   - 💬 Chat       → chat interativo dedicado com Ollama + LangChain
 """
 
-import sys, uuid, subprocess
+import sys, uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -57,7 +57,6 @@ def _init():
         "chat_meeting_id": None,
         "chat_history_store": {},
         "mode_selected": False,
-        "bot_process": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -66,16 +65,62 @@ def _init():
 _init()
 
 
-def bot_is_running() -> bool:
-    proc = st.session_state.get("bot_process")
-    return proc is not None and proc.poll() is None
+def select_meeting(meeting) -> None:
+    """Abre (ou fecha, com None) uma reunião. O id vai para a URL: se a sessão do
+    navegador cair — aba em segundo plano durante a reunião, F5 — a tela volta sozinha."""
+    st.session_state.meeting = meeting
+    if meeting is None:
+        st.query_params.pop("m", None)
+    else:
+        st.query_params["m"] = meeting.id
 
 
-def start_bot(meeting_url: str, title: str) -> None:
-    st.session_state.bot_process = subprocess.Popen(
-        [sys.executable, "-m", "infrastructure.recorder.run_bot",
-         "--url", meeting_url, "--title", title],
-    )
+if st.session_state.meeting is None and "m" in st.query_params:
+    st.session_state.meeting = container.repository.find_by_id(st.query_params["m"])
+
+
+_STATUS_LABEL = {
+    MeetingStatus.PENDING: "Na fila", MeetingStatus.RECORDING: "Bot gravando a reunião",
+    MeetingStatus.TRANSCRIBING: "Transcrevendo o áudio", MeetingStatus.SUMMARIZING: "Gerando o resumo",
+}
+
+
+_ACTIVE = (MeetingStatus.PENDING, MeetingStatus.RECORDING,
+           MeetingStatus.TRANSCRIBING, MeetingStatus.SUMMARIZING)
+
+
+@st.fragment(run_every="5s")
+def watch_progress(meeting_id: str, shown_status: MeetingStatus) -> None:
+    """Relê o status a cada 5 s. A cada mudança recarrega a página inteira,
+    para a barra lateral e o conteúdo acompanharem."""
+    current = container.repository.find_by_id(meeting_id)
+    if current is None:
+        return
+    if current.status != shown_status:
+        st.session_state.meeting = current
+        st.rerun()
+    st.info(f"{_STATUS_ICON[current.status]} {_STATUS_LABEL.get(current.status, current.status.value)}…")
+
+
+@st.fragment(run_every="5s")
+def active_meetings_panel() -> None:
+    """Reuniões em andamento, visíveis mesmo sem nenhuma reunião aberta."""
+    active = [m for m in container.repository.list_all() if m.status in _ACTIVE]
+    snapshot = [(m.id, m.status) for m in active]
+    if st.session_state.get("_active_snapshot", snapshot) != snapshot:
+        st.session_state._active_snapshot = snapshot
+        st.rerun()  # algo mudou: atualiza também a barra lateral
+    st.session_state._active_snapshot = snapshot
+    if not active:
+        return
+    st.markdown("### ⏱ Em andamento")
+    for m in active:
+        col_txt, col_btn = st.columns([4, 1])
+        col_txt.info(f"{_STATUS_ICON[m.status]} **{m.title}** — {_STATUS_LABEL[m.status]}…")
+        if col_btn.button("Abrir", key=f"open_active_{m.id}", use_container_width=True):
+            select_meeting(m)
+            st.rerun()
+    st.divider()
 
 
 _STATUS_ICON = {
@@ -144,13 +189,13 @@ with st.sidebar:
         for m in all_meetings:
             label = m.title[:30] + ("..." if len(m.title) > 30 else "")
             if st.button(f"{_STATUS_ICON[m.status]} {label}", key=f"load_{m.id}", use_container_width=True):
-                st.session_state.meeting = m
+                select_meeting(m)
                 st.rerun()
 
         if st.session_state.meeting:
             st.divider()
-            if st.button("✖ Limpar sessão", use_container_width=True):
-                st.session_state.meeting = None
+            if st.button("✖ Fechar reunião", use_container_width=True):
+                select_meeting(None)
                 st.rerun()
 
 
@@ -159,6 +204,7 @@ if st.session_state.page == "meetings":
     st.title("🎤 Meet Agent")
 
     if st.session_state.meeting is None:
+        active_meetings_panel()
         if settings.is_solo:
             st.subheader("Nova reunião")
             title = st.text_input("Título", placeholder="Sprint Planning — Semana 22")
@@ -191,7 +237,7 @@ if st.session_state.page == "meetings":
                     st.error(meeting.error)
                     st.stop()
 
-                st.session_state.meeting = meeting
+                select_meeting(meeting)
                 st.rerun()
 
         else:
@@ -212,15 +258,17 @@ if st.session_state.page == "meetings":
 
                 if st.button(
                     "🚀 Enviar bot para a reunião",
-                    disabled=not (meet_url and meeting_title) or bot_is_running(),
+                    disabled=not (meet_url and meeting_title),
                     type="primary",
                     use_container_width=True,
                 ):
-                    start_bot(meet_url, meeting_title)
-
-                if bot_is_running():
-                    st.info("🤖 Bot em execução. Ao fim da reunião ela aparece na lista "
-                            "ao lado; clique em Atualizar para ver o andamento.")
+                    try:
+                        new_id = container.dispatch_bot(meet_url.strip(), meeting_title)
+                    except ValueError as e:
+                        st.error(str(e))
+                    else:
+                        select_meeting(container.repository.find_by_id(new_id))
+                        st.rerun()
 
             with col_status:
                 st.markdown("### 📋 Como funciona")
@@ -248,10 +296,14 @@ if st.session_state.page == "meetings":
         st.caption(date_str)
 
         if meeting.status == MeetingStatus.ERROR:
-            st.error(f"Falha no processamento: {meeting.error}")
+            st.error(f"Falha: {meeting.error}")
+            if meeting.audio_path and Path(meeting.audio_path).exists():
+                if st.button("🔁 Reprocessar áudio gravado"):
+                    container.enqueue_processing(meeting.id, meeting.audio_path, meeting.title)
+                    select_meeting(container.repository.find_by_id(meeting.id))
+                    st.rerun()
         elif meeting.status != MeetingStatus.DONE:
-            st.info(f"{_STATUS_ICON[meeting.status]} Processamento em andamento "
-                    f"({meeting.status.value}). Clique em Atualizar na barra lateral.")
+            watch_progress(meeting.id, meeting.status)
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("⏱ Duração", f"{meeting.duration_minutes:.0f} min")

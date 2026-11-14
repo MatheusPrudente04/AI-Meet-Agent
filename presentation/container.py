@@ -7,7 +7,10 @@ Os modos diferem só em dois pontos (ADR-004):
 """
 from __future__ import annotations
 
+import subprocess
+import sys
 import threading
+import uuid
 from functools import lru_cache
 
 from config.settings import get_settings
@@ -79,6 +82,25 @@ class Container:
                 target=self.process_meeting.execute, args=(data,),
                 name=f"process-{meeting_id[:8]}", daemon=True,
             ).start()
+
+
+    def dispatch_bot(self, meeting_url: str, title: str) -> str:
+        """Manda o bot para a reunião sem bloquear. Retorna o id da reunião."""
+        if not meeting_url.startswith("https://meet.google.com/"):
+            raise ValueError("Informe um link do Google Meet (https://meet.google.com/...).")
+
+        meeting_id = str(uuid.uuid4())
+        self.repository.save(Meeting(id=meeting_id, title=title))
+
+        if self._is_collab:
+            from worker.tasks import join_meeting_task
+            join_meeting_task.delay(meeting_id, meeting_url, title)
+        else:
+            subprocess.Popen([
+                sys.executable, "-m", "infrastructure.recorder.run_bot",
+                "--url", meeting_url, "--title", title, "--meeting-id", meeting_id,
+            ])
+        return meeting_id
 
 
 @lru_cache(maxsize=1)

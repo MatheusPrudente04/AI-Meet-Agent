@@ -14,7 +14,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, Callable, Optional
+from typing import Callable, Optional
 
 from playwright.async_api import BrowserContext, Page, Worker, async_playwright
 
@@ -71,16 +71,16 @@ class PlaywrightBotRecorder:
         audio_dir: str,
         bot_name: str = "Meet Agent",
         headless: bool = False,
-        on_audio_ready: Optional[Callable[..., Awaitable[None]]] = None,
-        capture_port: int = 8000,
+        capture_endpoint: str = "http://127.0.0.1:8000",
+        on_recording_started: Optional[Callable[[], None]] = None,
     ) -> None:
         self._profile_dir = str(chrome_profile_dir)
         self._audio_dir = Path(audio_dir)
         self._audio_dir.mkdir(parents=True, exist_ok=True)
         self._bot_name = bot_name
         self._headless = headless
-        self._on_audio_ready = on_audio_ready
-        self._capture_endpoint = f"http://127.0.0.1:{capture_port}"
+        self._capture_endpoint = capture_endpoint.rstrip("/")
+        self._on_recording_started = on_recording_started
 
         self._ext_sw: Optional[Worker] = None
         self._context: Optional[BrowserContext] = None
@@ -96,8 +96,13 @@ class PlaywrightBotRecorder:
     # Ponto de entrada principal
     # ------------------------------------------------------------------
 
-    async def join_async(self, meeting_url: str) -> BotSession:
-        session_id = str(uuid.uuid4())
+    async def join_async(self, meeting_url: str, session_id: Optional[str] = None) -> BotSession:
+        """Entra na reunião, grava até ela terminar e retorna a sessão.
+
+        Lança exceção se não conseguir entrar ou iniciar a captura. O áudio já
+        enviado fica em <audio_dir>/<session_id>.webm mesmo em caso de falha.
+        """
+        session_id = session_id or str(uuid.uuid4())
         self.session = BotSession(id=session_id, meeting_url=meeting_url)
 
         ext_dir = Path(__file__).parent / "extension"
@@ -137,12 +142,18 @@ class PlaywrightBotRecorder:
             await self._wait_until_admitted(page)
             await self._mute_devices(page)
 
+            if self._shutdown_event.is_set():
+                await context.close()
+                return self.session
+
             logger.info("Admitido — ativando legendas")
             await self._enable_captions(page)
 
             logger.info("Localizando service worker da extensão")
             self._ext_sw = await self._find_ext_sw(context)
             await self._start_extension_capture(session_id, page)
+            if self._on_recording_started:
+                self._on_recording_started()
 
             await self._wait_until_meeting_ends(page)
 
@@ -163,9 +174,6 @@ class PlaywrightBotRecorder:
             logger.warning(
                 "Arquivo de áudio não encontrado ou vazio após reunião: %s", audio_path
             )
-
-        if self._on_audio_ready and self.session.audio_path:
-            await self._on_audio_ready(self.session.audio_path)
 
         return self.session
 
@@ -245,7 +253,10 @@ class PlaywrightBotRecorder:
                 except Exception:
                     pass
             await asyncio.sleep(1)
-        logger.warning("Botão de entrada não encontrado após 30s — continuando")
+        raise RuntimeError(
+            "Botão de entrar não encontrado em 30s. Link inválido, reunião encerrada "
+            "ou a tela do Meet mudou."
+        )
 
     async def _wait_until_admitted(self, page: Page, timeout: float = 120.0) -> None:
         """Aguarda até o usuário ser admitido (lobby desaparece)."""
@@ -261,7 +272,7 @@ class PlaywrightBotRecorder:
             except Exception:
                 pass
             await asyncio.sleep(2)
-        logger.warning("Timeout aguardando admissão (%.0fs) — continuando", timeout)
+        raise RuntimeError(f"Bot não foi admitido na reunião em {timeout:.0f}s.")
 
     # ------------------------------------------------------------------
     # Legendas

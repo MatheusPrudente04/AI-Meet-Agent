@@ -12,7 +12,17 @@ celery_app.conf.update(
     accept_content=["json"],
     timezone="America/Sao_Paulo",
     task_track_started=True,
+    # O bot tem fila própria: um worker de bot grava uma reunião por vez (ADR-006).
+    task_routes={"join_meeting": {"queue": "bot"}},
 )
+
+
+@celery_app.task(name="join_meeting")
+def join_meeting_task(meeting_id: str, meeting_url: str, title: str) -> dict:
+    from infrastructure.recorder.bot_job import run_bot_job
+
+    meeting = run_bot_job(meeting_id, meeting_url, title)
+    return {"meeting_id": meeting.id, "status": meeting.status.value, "error": meeting.error}
 
 
 @celery_app.task(name="process_meeting")

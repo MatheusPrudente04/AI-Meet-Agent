@@ -13,7 +13,7 @@ Uma ADR só vira código depois de aceita. Ao aceitar, troque o status e a data 
 | 003 | Acesso ao MongoDB síncrono com PyMongo | Aceita, implementada em 2026-11-14 | 1 | Sim |
 | 004 | Modos de execução: collab é produção, solo é desenvolvimento | Aceita, implementada em 2026-11-14 | 1 | Sim |
 | 005 | Configuração centralizada e validada na partida | Aceita, implementada em 2026-11-14 | 1 | Sim |
-| 006 | Bot como worker dedicado, despachado por fila | Proposta | 2 | Sim |
+| 006 | Bot como worker dedicado, despachado por fila | Aceita, implementada em 2026-11-14 (bot no host) | 2 | Sim |
 | 007 | Autenticação e limites da API | Proposta | 3 | Sim |
 | 008 | Runtime e dependências travadas | Proposta | 3 | Sim |
 | 009 | Legendas e identificação de falantes | Proposta (decisão do dono do produto) | 4 | Sim |
@@ -175,6 +175,15 @@ container antes de fechar a sprint. A conta Google do bot pode cair em desafio d
 datacenter.
 
 **Reverte-se assim.** O recorder continua executável por CLI (`run_bot`), que permanece como ferramenta de diagnóstico.
+
+**Implementação (2026-11-14) — o bot-worker roda no host, não em container.** O destino atual é
+Docker Compose na máquina do dono do projeto. API, worker de processamento, Streamlit, Mongo e
+Redis ficam no compose; o worker do bot (`python main.py --bot-worker`) roda direto no macOS e
+consome a fila `bot` pelo Redis publicado em `localhost:6380`. Motivo: a sessão Google salva pelo
+Chromium do macOS não é legível por um Chromium Linux dentro de container, e refazer o login lá
+exigiria tela virtual com acesso remoto. A task `join_meeting` é a mesma nos dois arranjos; levar o
+bot para um container quando houver servidor é trabalho de imagem e login, não de código.
+Os caminhos de áudio são relativos (`data/audio/<id>.webm`) para valerem tanto no host quanto em `/app`.
 
 ---
 
