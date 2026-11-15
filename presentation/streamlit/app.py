@@ -34,8 +34,6 @@ container = get_app_container()
 
 st.set_page_config(page_title="Meet Agent", page_icon="🎤", layout="wide")
 
-MAX_CHAT_HISTORY = 50
-
 _SECTION_EMOJI = {
     "went_well": "✅", "to_improve": "🔧", "action_items": "📌",
     "risks": "⚠️", "delivered": "📦", "not_delivered": "⏳",
@@ -53,9 +51,6 @@ def _init():
     defaults = {
         "page": "meetings",
         "meeting": None,
-        "chat_history": [],
-        "chat_meeting_id": None,
-        "chat_history_store": {},
         "mode_selected": False,
     }
     for k, v in defaults.items():
@@ -258,7 +253,8 @@ if st.session_state.page == "meetings":
 
                 if st.button(
                     "🚀 Enviar bot para a reunião",
-                    disabled=not (meet_url and meeting_title),
+                    # Com a agenda ligada o título pode vir do evento.
+                    disabled=not (meet_url and (meeting_title or settings.enable_calendar)),
                     type="primary",
                     use_container_width=True,
                 ):
@@ -324,15 +320,24 @@ if st.session_state.page == "meetings":
 
             if summary.tasks:
                 st.markdown("### Tarefas")
-                st.info("📝 Nota: Mudanças em tarefas não são persistidas nesta versão.")
                 for idx, task in enumerate(summary.tasks):
-                    task_label = f"**{task.description}**  \n*{task.responsible}* · {task.deadline}"
+                    key = f"task_{meeting.id}_{idx}"
                     st.checkbox(
-                        task_label,
-                        value=getattr(task, "done", False),
-                        key=f"task_{idx}_{task.description[:10]}",
-                        disabled=True,
+                        f"**{task.description}**  \n*{task.responsible}* · {task.deadline}",
+                        value=task.done,
+                        key=key,
+                        on_change=lambda i=idx, k=key: container.set_task_done(meeting.id, i, st.session_state[k]),
                     )
+                if settings.email_enabled:
+                    with st.form(f"email_{meeting.id}", border=False):
+                        to = st.text_input("Enviar tarefas por e-mail para", placeholder="pessoa@empresa.com")
+                        if st.form_submit_button("✉️ Enviar tarefas") and to:
+                            try:
+                                from infrastructure.email.email_sender import EmailSender
+                                EmailSender().send_tasks_email(to.strip(), meeting)
+                                st.success(f"Tarefas enviadas para {to}.")
+                            except Exception as e:
+                                st.error(f"Não foi possível enviar: {e}")
 
             if summary.decisions:
                 st.markdown("### Decisões")
@@ -343,6 +348,14 @@ if st.session_state.page == "meetings":
             render_extra_sections(summary)
 
         st.divider()
+        if meeting.is_transcribed:
+            from infrastructure.exporters.markdown_exporter import MarkdownExporter
+            st.download_button(
+                "⬇️ Exportar reunião (.md)",
+                data=MarkdownExporter().render(meeting),
+                file_name=f"{meeting.title}.md",
+                mime="text/markdown",
+            )
         with st.expander("📄 Transcrição completa"):
             st.text(meeting.transcript_formatted or meeting.transcript_text)
             st.download_button(
@@ -376,13 +389,8 @@ elif st.session_state.page == "chat":
     )
     chat_meeting = meeting_options[selected_label]
 
-    if st.session_state.chat_meeting_id != chat_meeting.id:
-        st.session_state.chat_meeting_id = chat_meeting.id
-        if chat_meeting.id not in st.session_state.chat_history_store:
-            st.session_state.chat_history_store[chat_meeting.id] = []
-        st.rerun()
-
-    chat_history = st.session_state.chat_history_store.setdefault(chat_meeting.id, [])
+    # A conversa fica guardada na reunião: sobrevive a recarregar a página.
+    chat_history = chat_meeting.chat_history
 
     st.markdown("---")
     col_meta, _ = st.columns([2, 3])
@@ -405,49 +413,16 @@ elif st.session_state.page == "chat":
                 st.write(msg["content"])
 
     if prompt := st.chat_input("Ex: Quais foram as principais decisões?"):
-        if len(chat_history) >= MAX_CHAT_HISTORY:
-            chat_history = chat_history[-MAX_CHAT_HISTORY:]
-
-        chat_history.append({"role": "user", "content": prompt})
-        st.session_state.chat_history_store[chat_meeting.id] = chat_history
-
-        with st.chat_message("user"):
-            st.write(prompt)
-
-        with st.chat_message("assistant"):
-            placeholder = st.empty()
-            with st.spinner("Pensando..."):
-                try:
-                    result = container.chat_with_meeting.execute(
-                        ChatWithMeetingInput(
-                            meeting=chat_meeting,
-                            question=prompt,
-                            history=chat_history[:-1],
+        with chat_container:
+            with st.chat_message("user"):
+                st.write(prompt)
+            with st.chat_message("assistant"):
+                with st.spinner("Pensando..."):
+                    try:
+                        result = container.chat_with_meeting.execute(
+                            ChatWithMeetingInput(meeting=chat_meeting, question=prompt)
                         )
-                    )
-                    answer = result.answer if result.success else f"⚠️ {result.error_message}"
-                except Exception as e:
-                    answer = f" Erro: {str(e)}"
-                    result = None
-
-            placeholder.write(answer)
-
-            # Lacuna 4 — tarefas criadas pelo chat: exibe E persiste.
-            if result is not None and result.success and result.extracted_tasks:
-                if chat_meeting.summary is None:
-                    chat_meeting.summary = Summary()
-                chat_meeting.summary.tasks.extend(result.extracted_tasks)
-                try:
-                    container.repository.save(chat_meeting)
-                    for new_task in result.extracted_tasks:
-                        st.success(f"Tarefa criada: {new_task.description} "
-                                   f"— {new_task.responsible}"
-                                   + (f" · {new_task.deadline}" if new_task.deadline else ""))
-                    st.toast(f" {len(result.extracted_tasks)} tarefa(s) "
-                             "salva(s) na reunião!", icon="")
-                except Exception as e:
-                    st.warning(f"Tarefa extraída, mas falhou ao salvar: {e}")
-
-        chat_history.append({"role": "assistant", "content": answer})
-        st.session_state.chat_history_store[chat_meeting.id] = chat_history
-        st.rerun()
+                        answer = result.answer if result.success else f"⚠️ {result.error_message}"
+                    except Exception as e:
+                        answer = f"⚠️ Erro: {e}"
+                st.write(answer)

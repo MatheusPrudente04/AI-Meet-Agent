@@ -8,6 +8,9 @@ finaliza com POST /capture/finalize; o áudio fica em data/audio/<session>.webm.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
+import json
 import logging
 import shutil
 import time
@@ -39,13 +42,84 @@ MEET_STATUS_JS = """
     });
     const leaveVisible = !!(leaveBtn && leaveBtn.offsetParent !== null);
 
-    return { left, participantCount, leaveVisible };
+    // A sala de espera também mostra "Sair da chamada" e o bloco do próprio bot.
+    // Dentro da chamada existe o botão de legendas (ou mais de um participante).
+    const captionsBtn = Array.from(document.querySelectorAll('button[aria-label]')).some(b =>
+        /legenda|caption/i.test(b.getAttribute('aria-label') || ''));
+    const inCall = leaveVisible && (captionsBtn || participantCount > 1);
+
+    return { left, participantCount, leaveVisible, inCall };
 })()
 """
 
 
 # ID fixo da extensão, derivado do campo "key" do manifest.json.
 EXTENSION_ID = "cjehgonhdknnomnbbdcmjkhomfnghcfm"
+
+
+# Diagnóstico (BOT_DEBUG_DOM): amostra o que o Meet mostra sobre participantes e
+# legendas, para escolher seletores a partir da tela real em vez de supor.
+DOM_SAMPLE_JS = """
+(() => {
+    const clip = (s, n) => (s || '').replace(/\\s+/g, ' ').trim().slice(0, n);
+    const tiles = Array.from(document.querySelectorAll('[data-participant-id]')).map(el => ({
+        id: el.getAttribute('data-participant-id'),
+        text: clip(el.innerText, 160),
+        aria: el.getAttribute('aria-label'),
+    }));
+    const live = Array.from(document.querySelectorAll('[aria-live], [role="region"], [role="log"]'))
+        .filter(el => clip(el.innerText, 10).length > 0)
+        .slice(0, 10)
+        .map(el => ({
+            role: el.getAttribute('role'),
+            ariaLive: el.getAttribute('aria-live'),
+            ariaLabel: el.getAttribute('aria-label'),
+            cls: clip(el.className && el.className.toString(), 80),
+            text: clip(el.innerText, 500),
+            html: (el.outerHTML || '').slice(0, 3000),
+        }));
+    return { tiles, live };
+})()
+"""
+
+
+# Quem está falando e quem está na sala (ADR-009 fase 2). Estrutura observada no
+# Meet em 2026-11: a região de legendas tem um bloco por fala, com a foto e o
+# nome num cabeçalho e o texto no último filho. Não dependemos de classes CSS.
+CAPTIONS_REGION = '[role="region"][aria-label="Legendas"], [role="region"][aria-label="Captions"]'
+SPEAKERS_JS = """
+(() => {
+    const region = document.querySelector('%s');
+    const captions = [];
+    if (region) {
+        for (const img of region.querySelectorAll('img')) {
+            const header = img.parentElement;
+            const block = header && header.parentElement;
+            if (!block || block.children.length < 2) continue;
+            const name = (header.innerText || '').trim();
+            const text = (block.children[block.children.length - 1].innerText || '').trim();
+            if (name) captions.push({ name, text });
+        }
+    }
+    // Nome do bloco de vídeo: a linha que se repete (rótulo + legenda do bloco);
+    // senão, a primeira linha que não é nome de ícone (ex.: "frame_person").
+    const participants = [];
+    const selfNames = [];
+    for (const tile of document.querySelectorAll('[data-participant-id]')) {
+        const lines = (tile.innerText || '').split('\\n').map(l => l.trim()).filter(Boolean);
+        const name = lines.find((l, i) => lines.indexOf(l) !== i) || lines.find(l => !/^[a-z0-9_]+$/.test(l));
+        if (!name) continue;
+        if (!participants.includes(name)) participants.push(name);
+        // Só o próprio bloco oferece "Planos de fundo e efeitos" (ícone visual_effects).
+        if ((tile.innerText || '').includes('visual_effects') ||
+            tile.querySelector('button[aria-label*="Planos de fundo"], button[aria-label*="ackgrounds"]')) selfNames.push(name);
+    }
+    // Só vale se for exatamente um bloco: se o Meet mudar a tela, preferimos
+    // listar o bot a esconder gente.
+    const self = selfNames.length === 1 ? selfNames[0] : null;
+    return { captionsOn: !!region, captions, participants, self };
+})()
+""" % CAPTIONS_REGION
 
 
 class BotNotLoggedInError(Exception):
@@ -63,6 +137,7 @@ class PlaywrightBotRecorder:
     ALONE_TIMEOUT = 120.0
     SILENCE_TIMEOUT = 300.0
     END_POLL_INTERVAL = 5.0
+    CAPTIONS_RETRY_S = 10.0
     MEET_STATUS_JS = MEET_STATUS_JS  # referência ao módulo para conveniência
 
     def __init__(
@@ -73,14 +148,18 @@ class PlaywrightBotRecorder:
         headless: bool = False,
         capture_endpoint: str = "http://127.0.0.1:8000",
         on_recording_started: Optional[Callable[[], None]] = None,
+        debug_dom: bool = False,
+        api_key: str = "",
     ) -> None:
         self._profile_dir = str(chrome_profile_dir)
         self._audio_dir = Path(audio_dir)
         self._audio_dir.mkdir(parents=True, exist_ok=True)
         self._bot_name = bot_name
+        self._api_key = api_key
         self._headless = headless
         self._capture_endpoint = capture_endpoint.rstrip("/")
         self._on_recording_started = on_recording_started
+        self._debug_dom = debug_dom
 
         self._ext_sw: Optional[Worker] = None
         self._context: Optional[BrowserContext] = None
@@ -151,11 +230,15 @@ class PlaywrightBotRecorder:
 
             logger.info("Localizando service worker da extensão")
             self._ext_sw = await self._find_ext_sw(context)
-            await self._start_extension_capture(session_id, page)
+            started_ms = await self._start_extension_capture(session_id, page)
             if self._on_recording_started:
                 self._on_recording_started()
 
-            await self._wait_until_meeting_ends(page)
+            tracker = asyncio.create_task(self._track_speakers(page, started_ms))
+            try:
+                await self._wait_until_meeting_ends(page)
+            finally:
+                tracker.cancel()
 
             await self._stop_extension_capture(page)
             await asyncio.sleep(2)  # dá tempo ao offscreen de fazer POST /finalize
@@ -259,84 +342,105 @@ class PlaywrightBotRecorder:
         )
 
     async def _wait_until_admitted(self, page: Page, timeout: float = 120.0) -> None:
-        """Aguarda até o usuário ser admitido (lobby desaparece)."""
+        """Aguarda o bot estar dentro da chamada, e não só na sala de espera."""
         deadline = time.monotonic() + timeout
+        status: dict = {}
         while time.monotonic() < deadline:
             if self._shutdown_event.is_set():
                 return
             try:
                 status = await page.evaluate(self.MEET_STATUS_JS)
-                if status.get("leaveVisible"):
-                    logger.info("Admitido na reunião (botão Sair visível)")
+                if status.get("inCall"):
+                    logger.info("Admitido na reunião")
                     return
             except Exception:
                 pass
             await asyncio.sleep(2)
+        if status.get("leaveVisible"):
+            # Sem o sinal de "dentro da chamada" (ainda na espera, ou o Meet mudou
+            # a tela): grava mesmo assim; as legendas são tentadas durante a reunião.
+            logger.warning("Admissão não confirmada em %.0fs — gravando mesmo assim", timeout)
+            return
         raise RuntimeError(f"Bot não foi admitido na reunião em {timeout:.0f}s.")
 
     # ------------------------------------------------------------------
     # Legendas
     # ------------------------------------------------------------------
 
-    async def _enable_captions(self, page: Page) -> None:
-        """Ativa legendas ao vivo e garante o idioma Português."""
-        cc_selectors = [
-            '[aria-label*="Ativar legendas"]',
-            '[aria-label*="Turn on captions"]',
-            '[aria-label*="Ligar legendas"]',
-            '[aria-label*="legendas ao vivo"]',
-            'button[jsname="r8qRAd"]',
-        ]
-        for sel in cc_selectors:
-            try:
-                btn = page.locator(sel)
-                if await btn.count() > 0:
-                    await btn.first.click(timeout=3_000)
-                    logger.info("Legendas ativadas via: %s", sel)
-                    await asyncio.sleep(1.5)
-                    break
-            except Exception:
-                pass
+    async def _enable_captions(self, page: Page) -> bool:
+        """Liga as legendas com o atalho `c`. São a fonte de "quem falou"; sem
+        elas a reunião é gravada normalmente, só sem nomes na transcrição.
 
-        await self._ensure_captions_language(page)
+        O atalho alterna: só é pressionado com a região ausente, e esperamos a
+        região aparecer antes de qualquer nova tentativa (senão desligaria).
+        """
+        if await page.locator(CAPTIONS_REGION).count() > 0:
+            return True
+        try:
+            await page.locator("body").click(position={"x": 400, "y": 300}, timeout=2_000)
+            await page.keyboard.press("c")
+            await page.wait_for_selector(CAPTIONS_REGION, state="attached", timeout=5_000)
+            logger.info("Legendas ligadas")
+            return True
+        except Exception as exc:
+            logger.warning("Legendas ainda desligadas (%s) — nova tentativa em instantes",
+                           str(exc).splitlines()[0][:120])
+            return False
 
-    async def _ensure_captions_language(self, page: Page) -> None:
-        """Configura o idioma das legendas para Português (todas as rotas possíveis)."""
-        # Rota 1: menu de configurações de legenda
-        settings_selectors = [
-            '[aria-label*="Configurações de legenda"]',
-            '[aria-label*="Caption settings"]',
-            '[aria-label*="Configurações de legendas"]',
-        ]
-        for sel in settings_selectors:
-            try:
-                btn = page.locator(sel)
-                if await btn.count() > 0:
-                    await btn.first.click(timeout=2_000)
-                    await asyncio.sleep(0.5)
-                    break
-            except Exception:
-                pass
+    async def _track_speakers(self, page: Page, start_ms: int) -> None:
+        """Registra a cada segundo quem a legenda mostra falando e quem está na
+        sala, em <id>.speakers.jsonl. Roda até ser cancelada.
 
-        # Rota 2: seletor de idioma direto
-        lang_selectors = [
-            'li:has-text("Português (Brasil)")',
-            'li:has-text("Português")',
-            '[aria-label*="Português"]',
-            'option[value="pt-BR"]',
-            'option[value="pt"]',
-        ]
-        for sel in lang_selectors:
+        Também mantém as legendas ligadas: se a região sumir (ou nunca tiver
+        aparecido), tenta de novo a cada CAPTIONS_RETRY_S.
+        """
+        path = self._audio_dir / f"{self.session.id}.speakers.jsonl"
+
+        def write(event: dict) -> None:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+        write({"ts": start_ms, "type": "start"})
+        last_text: dict[str, str] = {}
+        last_participants: list[str] = []
+        last_self: Optional[str] = None
+        captions_on: Optional[bool] = None
+        last_retry = 0.0
+        first = True
+        while True:
             try:
-                el = page.locator(sel)
-                if await el.count() > 0:
-                    await el.first.click(timeout=2_000)
-                    logger.info("Idioma de legendas: Português (%s)", sel)
+                snap = await page.evaluate(SPEAKERS_JS)
+            except Exception as exc:
+                if page.is_closed():
                     return
-            except Exception:
-                pass
+                logger.warning("Leitura de legendas falhou: %s", str(exc).splitlines()[0][:200])
+                await asyncio.sleep(self.CAPTIONS_RETRY_S)
+                continue
 
-        logger.debug("Idioma de legendas não configurado (seletores não encontrados)")
+            now_ms = int(time.time() * 1000)
+            if snap["captionsOn"] != captions_on:
+                captions_on = snap["captionsOn"]
+                write({"ts": now_ms, "type": "captions", "on": captions_on})
+            if not captions_on and time.monotonic() - last_retry >= self.CAPTIONS_RETRY_S:
+                last_retry = time.monotonic()
+                await self._enable_captions(page)
+
+            # O último bloco de cada pessoa é a fala corrente; texto mudou = está falando.
+            latest = {c["name"]: c["text"] for c in snap["captions"]}
+            if not first:
+                for name, text in latest.items():
+                    if last_text.get(name) != text:
+                        write({"ts": now_ms, "type": "speaker", "name": name})
+            last_text, first = latest, False
+
+            if snap["self"] and snap["self"] != last_self:
+                last_self = snap["self"]
+                write({"ts": now_ms, "type": "self", "name": last_self})
+            if snap["participants"] and snap["participants"] != last_participants:
+                last_participants = snap["participants"]
+                write({"ts": now_ms, "type": "participants", "names": last_participants})
+
+            await asyncio.sleep(1)
 
     # ------------------------------------------------------------------
     # Extensão tabCapture
@@ -356,7 +460,13 @@ class PlaywrightBotRecorder:
             f"Certifique-se de que a extensão está em: {Path(__file__).parent / 'extension'}"
         )
 
-    async def _start_extension_capture(self, session_id: str, page: Page) -> None:
+    def _capture_token(self, session_id: str) -> str:
+        """Token da sessão (ADR-007): o navegador recebe só ele, nunca a chave."""
+        if not self._api_key:
+            return ""
+        return hmac.new(self._api_key.encode(), session_id.encode(), hashlib.sha256).hexdigest()
+
+    async def _start_extension_capture(self, session_id: str, page: Page) -> int:
         """Inicia a captura de áudio via tabCapture.
 
         Anti "message port closed": despacha o comando pela ABA (satisfaz a
@@ -367,7 +477,7 @@ class PlaywrightBotRecorder:
         # 1) Despacha o START pela aba (via content.js → SW). A resposta aqui é
         #    só "dispatched"; a confirmação real vem do status no passo 2.
         await page.evaluate(
-            """async ([session, endpoint, chunkMs]) => {
+            """async ([session, endpoint, chunkMs, token]) => {
                 return await new Promise((resolve) => {
                     function onResp(ev) {
                         if (ev.source !== window) return;
@@ -378,7 +488,7 @@ class PlaywrightBotRecorder:
                     }
                     window.addEventListener('message', onResp);
                     window.postMessage(
-                        { type: 'MEET_AGENT_CAPTURE', action: 'START', session, endpoint, chunkMs },
+                        { type: 'MEET_AGENT_CAPTURE', action: 'START', session, endpoint, chunkMs, token },
                         '*'
                     );
                     setTimeout(() => {
@@ -387,7 +497,7 @@ class PlaywrightBotRecorder:
                     }, 5000);
                 });
             }""",
-            [session_id, self._capture_endpoint, 2000],
+            [session_id, self._capture_endpoint, 2000, self._capture_token(session_id)],
         )
 
         # 2) CONFIRMA via status (storage) — canal que não exige contexto de aba.
@@ -408,7 +518,9 @@ class PlaywrightBotRecorder:
             phase = last_status.get("phase")
             if last_status.get("recording") or phase == "recording":
                 logger.info("Captura confirmada via status: %s", last_status)
-                return
+                # Instante em que o MediaRecorder começou (relógio desta máquina):
+                # é o zero do áudio para alinhar as legendas.
+                return int(last_status.get("startedAt") or time.time() * 1000)
             if phase == "error" or last_status.get("error"):
                 raise RuntimeError(
                     f"Falha ao iniciar captura de áudio: {last_status.get('error')}"
@@ -448,6 +560,16 @@ class PlaywrightBotRecorder:
     # Monitoramento do fim da reunião
     # ------------------------------------------------------------------
 
+    async def _dump_dom_sample(self, page: Page, elapsed: float) -> None:
+        try:
+            sample = await page.evaluate(DOM_SAMPLE_JS)
+            sample["t"] = round(elapsed, 1)
+            path = self._audio_dir / f"{self.session.id}.dom.jsonl"
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(sample, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            logger.debug("Amostra de DOM falhou: %s", exc)
+
     async def _leave_btn_visible(self, page: Page) -> bool:
         try:
             status = await page.evaluate(self.MEET_STATUS_JS)
@@ -465,6 +587,7 @@ class PlaywrightBotRecorder:
         last_chunk_time = time.monotonic()
         ever_had_participants = False
         leave_btn_was_visible = await self._leave_btn_visible(page)
+        started = time.monotonic()
 
         while not self._shutdown_event.is_set():
             await asyncio.sleep(self.END_POLL_INTERVAL)
@@ -473,6 +596,9 @@ class PlaywrightBotRecorder:
                 logger.info("Shutdown solicitado — saindo do loop de monitoramento")
                 break
 
+            if page.is_closed():
+                logger.info("Página fechada — reunião encerrada")
+                break
             try:
                 status = await page.evaluate(self.MEET_STATUS_JS)
             except Exception as exc:
@@ -480,6 +606,9 @@ class PlaywrightBotRecorder:
                 continue
 
             now = time.monotonic()
+
+            if self._debug_dom and self.session:
+                await self._dump_dom_sample(page, now - started)
 
             # Sinal 1: URL/DOM indica que saiu
             if status.get("left"):

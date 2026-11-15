@@ -12,10 +12,13 @@ let recorder = null;
 let chunkSeq = 0;
 let captureSession = null;
 let captureEndpoint = null;
+let captureToken = '';
+let startedAt = null;
 
 // Offscreen só tem chrome.runtime (sem chrome.storage): o status vai por
 // mensagem ao service worker, que é quem grava no storage.
 function report(status) {
+  status.startedAt = startedAt;
   return chrome.runtime.sendMessage({ type: 'OFFSCREEN_STATUS', status }).catch(() => {});
 }
 
@@ -34,7 +37,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
 });
 
-async function startRecording({ streamId, session, endpoint, chunkMs }) {
+async function startRecording({ streamId, session, endpoint, chunkMs, token }) {
   if (recorder && recorder.state !== 'inactive') {
     console.warn('[offscreen] já gravando — ignorando START duplicado');
     return;
@@ -42,6 +45,7 @@ async function startRecording({ streamId, session, endpoint, chunkMs }) {
 
   captureSession = session;
   captureEndpoint = endpoint;
+  captureToken = token || '';
   chunkSeq = 0;
 
   const stream = await navigator.mediaDevices.getUserMedia({
@@ -71,7 +75,7 @@ async function startRecording({ streamId, session, endpoint, chunkMs }) {
     try {
       const resp = await fetch(`${captureEndpoint}/capture/chunk?session=${captureSession}&seq=${seq}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream' },
+        headers: { 'Content-Type': 'application/octet-stream', 'X-Capture-Token': captureToken },
         body: e.data,
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -85,6 +89,7 @@ async function startRecording({ streamId, session, endpoint, chunkMs }) {
     try {
       await fetch(`${captureEndpoint}/capture/finalize?session=${captureSession}`, {
         method: 'POST',
+        headers: { 'X-Capture-Token': captureToken },
       });
     } catch (err) {
       console.error('[offscreen] finalize error:', err);
@@ -93,6 +98,7 @@ async function startRecording({ streamId, session, endpoint, chunkMs }) {
   };
 
   recorder.start(chunkMs || 2000);
+  startedAt = Date.now();
   await report({ recording: true, chunks: 0, finalized: false, error: null });
   console.log('[offscreen] gravação iniciada, session=', session);
 }

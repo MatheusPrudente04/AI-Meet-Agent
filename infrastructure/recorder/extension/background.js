@@ -27,7 +27,7 @@ async function ensureOffscreen() {
   creating = null;
 }
 
-async function startCapture({ tabId, session, endpoint, chunkMs }) {
+async function startCapture({ tabId, session, endpoint, chunkMs, token }) {
   // Marca "iniciando" para o recorder saber que o comando foi recebido.
   await chrome.storage.local.set({
     captureStatus: { recording: false, chunks: 0, finalized: false, error: null, phase: 'starting' },
@@ -53,6 +53,7 @@ async function startCapture({ tabId, session, endpoint, chunkMs }) {
     streamId,
     session,
     endpoint,
+    token,
     chunkMs: chunkMs || 2000,
   });
 
@@ -93,7 +94,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.action === 'START') {
       // Dispara o start. Tentamos responder pela porta (best-effort), mas o
       // recorder NÃO depende disso — ele confirma via storage/__meetAgentStatus.
-      startCaptureSafe({ tabId, session: msg.session, endpoint: msg.endpoint, chunkMs: msg.chunkMs })
+      startCaptureSafe({ tabId, session: msg.session, endpoint: msg.endpoint, chunkMs: msg.chunkMs, token: msg.token })
         .then((r) => { try { sendResponse(r); } catch (_) {} })
         .catch(() => {});
       return true; // mantém a porta se ela sobreviver; se fechar, storage cobre

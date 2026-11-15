@@ -1,6 +1,8 @@
 """worker/tasks.py — task Celery do processamento de reuniões (modo collab)."""
 from celery import Celery
+from celery.signals import setup_logging as celery_setup_logging
 
+from config.logging_setup import bind_meeting, setup_logging
 from config.settings import get_settings
 
 settings = get_settings()
@@ -17,10 +19,17 @@ celery_app.conf.update(
 )
 
 
+@celery_setup_logging.connect
+def _use_project_logging(**_):
+    """Substitui o formato do Celery pelo do projeto (id da reunião em toda linha)."""
+    setup_logging()
+
+
 @celery_app.task(name="join_meeting")
 def join_meeting_task(meeting_id: str, meeting_url: str, title: str) -> dict:
     from infrastructure.recorder.bot_job import run_bot_job
 
+    bind_meeting(meeting_id)
     meeting = run_bot_job(meeting_id, meeting_url, title)
     return {"meeting_id": meeting.id, "status": meeting.status.value, "error": meeting.error}
 
@@ -32,6 +41,7 @@ def process_meeting_task(meeting_id: str, audio_path: str, title: str) -> dict:
     from presentation.container import get_container
     from use_cases.process_meeting import ProcessMeetingInput
 
+    bind_meeting(meeting_id)
     meeting = get_container().process_meeting.execute(
         ProcessMeetingInput(meeting_id, audio_path, title)
     )

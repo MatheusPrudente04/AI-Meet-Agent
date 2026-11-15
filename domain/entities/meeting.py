@@ -91,6 +91,22 @@ class Meeting:
     transcript_raw: str = ""
     status: MeetingStatus = MeetingStatus.PENDING
     error: str = ""
+    # Conversa do chat sobre esta reunião: [{"role": "user"|"assistant", "content": str}]
+    chat_history: list[dict] = field(default_factory=list)
+    # Medições do processamento (tempos em segundos, tamanho da transcrição). Ver ADR-010.
+    metrics: dict = field(default_factory=dict)
+
+    @property
+    def participants_header(self) -> str:
+        """Lista de presentes, para o LLM saber quem estava na reunião mesmo
+        que alguém não tenha falado. Vazio quando não se sabe."""
+        if not self.participants:
+            return ""
+        return f"PARTICIPANTES DA REUNIÃO: {', '.join(self.participants)}\n\n"
+
+    @property
+    def transcript_for_llm(self) -> str:
+        return self.participants_header + (self.transcript_formatted or self.transcript_text)
 
     @property
     def is_transcribed(self) -> bool:

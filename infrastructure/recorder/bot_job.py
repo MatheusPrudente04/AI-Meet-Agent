@@ -25,6 +25,8 @@ def build_recorder(settings=None, **overrides) -> PlaywrightBotRecorder:
         bot_name=settings.bot_name,
         headless=settings.bot_headless,
         capture_endpoint=settings.capture_url,
+        debug_dom=settings.bot_debug_dom,
+        api_key=settings.api_key,
     )
     kwargs.update(overrides)
     return PlaywrightBotRecorder(**kwargs)

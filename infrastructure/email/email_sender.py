@@ -66,15 +66,37 @@ class EmailSender:
             meeting_link=meeting_link or "Não informado",
         )
 
+        return self._send(to_email, f"📋 Tarefa criada - {task_data.get('nome', 'Nova tarefa')}", content)
+
+    def send_tasks_email(self, to_email: str, meeting) -> bool:
+        """Envia as tarefas da reunião num único e-mail."""
+        tasks = meeting.summary.tasks if meeting.summary else []
+        if not tasks:
+            raise RuntimeError("A reunião não tem tarefas para enviar.")
+        lines = [
+            f"Tarefas da reunião \"{meeting.title}\" ({meeting.started_at:%d/%m/%Y %H:%M}):",
+            "",
+            *(f"{'[x]' if t.done else '[ ]'} {t.description} — responsável: {t.responsible}"
+              f"{f' — prazo: {t.deadline}' if t.deadline else ''}" for t in tasks),
+            "",
+            "Enviado pelo Meet Agent.",
+        ]
+        return self._send(to_email, f"Tarefas — {meeting.title}", "\n".join(lines))
+
+    def _send(self, to_email: str, subject: str, content: str) -> bool:
+        settings = self._settings
+        if not settings.email_enabled:
+            raise RuntimeError("SMTP não configurado. Preencha SMTP_USER e SMTP_PASSWORD no .env")
+
         msg = MIMEMultipart()
         msg["From"] = settings.smtp_from_email or settings.smtp_user
         msg["To"] = to_email
-        msg["Subject"] = f"📋 Tarefa criada - {task_data.get('nome', 'Nova tarefa')}"
+        msg["Subject"] = subject
 
         msg.attach(MIMEText(content, "plain", "utf-8"))
 
         context = ssl.create_default_context()
-        with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as server:
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20) as server:
             server.starttls(context=context)
             server.login(settings.smtp_user, settings.smtp_password)
             server.sendmail(msg["From"], msg["To"], msg.as_string())

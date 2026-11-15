@@ -1,427 +1,133 @@
-# IA Google Meet
+# Meet Agent
 
-Assistente para reunioes com transcricao, resumo automatico e chat sobre o conteudo.
+Bot que entra em reuniões do Google Meet, grava o áudio, transcreve, identifica quem falou,
+gera um resumo com tarefas e decisões e responde perguntas sobre a reunião.
 
-## O que o projeto faz
+Decisões de arquitetura: [docs/adr/README.md](docs/adr/README.md). Roteiro: [docs/roadmap.md](docs/roadmap.md).
 
-- Transcreve audio com Whisper.
-- Gera resumo estruturado com LLM (overview, topicos, tarefas, decisoes).
-- Permite chat contextual sobre a reuniao.
-- Suporta envio de bot para Google Meet via Playwright.
-- Funciona em dois modos:
-  - `solo`: fluxo local, sem fila.
-  - `collab`: fluxo com API/Fila (FastAPI + Celery/Redis).
+## Como funciona
 
-## Estrutura principal
+```
+Streamlit / API ──► fila "bot" ──► worker do bot (host) ──► Chromium entra no Meet
+                                        │  áudio em chunks ──► API /capture ──► data/audio/<id>.webm
+                                        │  legendas e presentes ──► data/audio/<id>.speakers.jsonl
+                                        ▼
+                    fila "celery" ──► worker de processamento ──► Whisper ──► nomes ──► LLM ──► MongoDB
+```
 
-- `config/`: configuracoes da aplicacao (`Settings`).
-- `domain/`: entidades e interfaces de dominio.
-- `use_cases/`: casos de uso.
-- `infrastructure/`: implementacoes concretas (transcricao, llm, recorder, repositorios).
-- `presentation/`: Streamlit e container de injecao de dependencia.
-- `api/`: rotas FastAPI e schemas.
-- `worker/`: tarefas assicronas.
+- Um único pipeline (`use_cases/process_meeting.py`) faz áudio → transcrição → resumo e grava o
+  status a cada etapa: `pending`, `recording`, `transcribing`, `summarizing`, `done`, `error`.
+- O texto vem do Whisper. As legendas do Meet são usadas só para saber **quem** falou e quando.
+- O bot entra com microfone e câmera desligados: só escuta.
 
-## Requisitos
+| Pasta | Conteúdo |
+|-------|----------|
+| `domain/` | Entidades e interfaces (portas) |
+| `use_cases/` | Regras: pipeline, resumo, chat, alinhamento de falantes |
+| `infrastructure/` | Whisper, LLM, repositórios, bot (`recorder/`), e-mail, exportação, agenda |
+| `presentation/` | `container.py` (única composição) e a interface Streamlit |
+| `api/` | FastAPI |
+| `worker/` | Tasks Celery |
 
-- Python 3.10+
-- `ffmpeg` instalado no sistema (dependência de áudio/Whisper local)
-- [Ollama](https://ollama.ai) instalado e rodando (`ollama serve`)
+## Subir o ambiente (produção local)
 
-## Dependências do sistema por SO
-
-### macOS
-
-- `Homebrew`
-- `brew install ffmpeg portaudio`
-- `pip install -r requirements.txt`
-- Para o Playwright, depois: `playwright install chromium`
-
-### Linux (Debian/Ubuntu)
-
-- `sudo apt update`
-- `sudo apt install ffmpeg libsndfile1 portaudio19-dev python3-pyaudio`
-- `pip install -r requirements.txt`
-- Para o Playwright, depois: `playwright install chromium`
-
-### Windows
-
-- Instale Python 3.10+ de https://www.python.org/
-- Instale FFmpeg e adicione `ffmpeg` ao PATH
-- `pip install -r requirements.txt`
-- Para o Playwright, depois: `playwright install chromium`
-- Se encontrar erro de compilação de pacotes nativos, instale o Build Tools do Visual Studio ou use as rodas pré-compiladas.
-
-## Dependências Python principais
-
-O pacote base usado pelo projeto está em `requirements.txt`:
-
-- `langchain`, `langchain-openai`
-- `google-auth`, `google-auth-oauthlib`, `google-api-python-client`
-- `pydantic-settings`, `python-dotenv`
-- `fastapi`, `uvicorn`, `redis`, `celery`, `requests`
-- `streamlit`, `playwright`, `pyaudio`
-
-Para o modo colaborativo, rode também:
+Pré-requisitos: Docker Desktop, Python 3.11, [Ollama](https://ollama.com) com o modelo configurado
+(`ollama pull qwen2.5:7b`).
 
 ```bash
-pip install -r requirements-collab.txt
+cp .env.example .env            # preencha; API_KEY é obrigatória (comando para gerar está no arquivo)
+
+# 1. Serviços: api :8001, streamlit :8501, redis :6380, mongo :27018
+docker compose up -d --build
+
+# 2. Ambiente do bot, no host (ele usa o Chromium e o login do Google desta máquina)
+python3.11 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+playwright install chromium
+python -m infrastructure.recorder.bot_setup     # uma vez: login manual da conta do bot
+
+# 3. Worker do bot, no host (deixe rodando)
+python main.py --bot-worker
 ```
 
-Para diarização real e Whisper local avançado, rode:
+Abra http://localhost:8501, cole o link do Meet e envie o bot. Quem organiza a reunião precisa
+**admitir** o bot quando ele pedir para entrar. A tela acompanha o andamento sozinha.
+
+Depois de atualizar o código: `docker compose up -d --build` e reinicie o worker do bot.
+
+### Modo de desenvolvimento (sem Docker)
+
+Com `APP_MODE=solo` não há fila nem MongoDB: as reuniões ficam em `data/meetings/*.json`.
 
 ```bash
-pip install -r requirements_diarization.txt
+python main.py --api      # API
+python main.py            # interface
+python -m infrastructure.recorder.run_bot --url "https://meet.google.com/xxx-xxxx-xxx"
 ```
 
-Para Whisper local, instale:
+## API
+
+Todas as rotas exigem o cabeçalho `X-API-Key`, exceto `/health`.
+
+| Rota | Função |
+|------|--------|
+| `GET /health` | Confere banco e fila; 503 se algum não responde |
+| `GET /meetings/` | Lista as reuniões |
+| `POST /meetings/upload` | Envia um áudio para processar (teto `MAX_UPLOAD_MB`) |
+| `POST /meetings/bot` | Manda o bot para um link do Meet |
+| `GET /meetings/{id}/status` | Status, erro e resumo |
+| `POST /meetings/{id}/process` | Reprocessa o áudio já gravado |
+| `POST /meetings/{id}/chat` | Pergunta sobre a reunião (a conversa fica guardada) |
+| `PATCH /meetings/{id}/tasks/{n}` | Marca ou desmarca a tarefa `n` |
+| `GET /meetings/{id}/export.md` | Reunião em Markdown |
+| `POST /meetings/{id}/tasks/email` | Envia as tarefas por e-mail (requer SMTP no `.env`) |
+| `POST /capture/*` | Uso interno do bot; token por sessão |
 
 ```bash
-pip install openai-whisper torch
+curl -H "X-API-Key: $API_KEY" http://localhost:8001/meetings/
 ```
 
-## Configuração rapida
+## Recursos opcionais
 
-1. Criar e ativar ambiente virtual:
+| Recurso | Como ligar |
+|---------|------------|
+| E-mail de tarefas | `SMTP_USER` e `SMTP_PASSWORD` no `.env` |
+| Título pela agenda | `ENABLE_CALENDAR=true`, com `credentials.json` do Google Calendar |
+| Exportação Markdown | Sempre disponível (botão na interface e rota da API) |
+
+## Operação
+
+- **Logs:** toda linha traz o id da reunião. `docker compose logs worker | grep <id>` segue uma reunião.
+- **Backup:** `scripts/backup.sh` gera `backups/mongo-<data>.archive.gz` e apaga gravações com mais
+  de 30 dias (`AUDIO_RETENTION_DAYS`). Restaurar: `scripts/backup.sh restore <arquivo>`.
+- **Reunião com erro:** a mensagem aparece na interface; o botão "Reprocessar áudio gravado" refaz
+  a transcrição e o resumo sem precisar de nova reunião.
+- **Diagnóstico de nomes:** `data/audio/<id>.speakers.jsonl` mostra se as legendas ligaram
+  (`captions`), quem estava (`participants`) e quem falou (`speaker`).
+
+## Limites conhecidos
+
+- O bot enxerga o **nome de exibição** de cada participante, não o e-mail.
+- Trechos em que o Meet não gerou legenda ficam como "Speaker N" (com uma única pessoa além do
+  bot, todas as falas são atribuídas a ela).
+- O Meet muda a tela sem aviso; os seletores ficam em `infrastructure/recorder/playwright_bot_recorder.py`.
+- Reuniões longas são resumidas em partes e o chat consulta só os trechos ligados à pergunta
+  (ADR-010). `LLM_CONTEXT_CHARS` ajusta o tamanho de cada parte.
+- O worker do bot grava uma reunião por vez.
+
+## Testes e dependências
 
 ```bash
-python -m venv venv
-source venv/bin/activate
+python -m pytest            # o teste com reunião real só roda com MEET_TEST_URL exportada
 ```
 
-2. Instalar dependencias:
+As versões exatas ficam em `requirements.txt` e `requirements-dev.txt`, geradas a partir dos `.in`
+em Python 3.11. Para atualizar:
 
 ```bash
-pip install -r requirements.txt
+docker run --rm -v "$PWD":/w -w /w python:3.11-slim sh -c \
+  "pip install pip-tools && pip-compile --strip-extras -o requirements.txt requirements.in \
+   && pip-compile --strip-extras -o requirements-dev.txt requirements-dev.in"
 ```
 
-3. Criar/ajustar `.env` na raiz. Exemplo minimo para **Solo**:
-
-```env
-APP_MODE=solo
-WHISPER_MODEL=medium
-WHISPER_DEVICE=cpu
-WHISPER_LANGUAGE=pt
-
-STORAGE_PATH=data/meetings
-AUDIO_STORAGE_PATH=data/audio
-MAX_AUDIO_SIZE_MB=25
-
-LLM_PROVIDER=ollama
-OLLAMA_BASE_URL=http://localhost:11434/v1
-OLLAMA_MODEL=nemotron-mini
-
-RECORDER_PROVIDER=none
-BOT_GOOGLE_EMAIL=
-BOT_GOOGLE_PASSWORD=
-BOT_CHROME_PROFILE=./bot_chrome_profile
-```
-
----
-
-## Fluxo de Execução por Modo
-
-### Modo Solo
-
-Fluxo local simples (sem fila, sem API):
-
-```bash
-streamlit run main.py
-```
-
-- Faça upload de um arquivo de áudio
-- Processamento acontece na hora
-- Resultado aparece imediatamente no histórico
-
-**Quando usar:** desenvolvimento local, testes, reuniões pontuais.
-
-### Modo Colaborativo (Collab) — Windows / macOS / Linux
-
-Fluxo com API, Fila e Bot Playwright (requer Redis, Celery, FastAPI).
-
-#### 1. Preparar ambiente
-
-```bash
-python -m venv .venv
-# Windows PowerShell
-.venv\Scripts\Activate.ps1
-# Windows CMD
-.venv\Scripts\activate.bat
-# macOS/Linux
-source .venv/bin/activate
-
-pip install -r requirements.txt
-pip install -r requirements-collab.txt
-python -m playwright install chromium
-```
-
-#### 2. Instalar Redis
-
-**macOS (Homebrew):**
-```bash
-brew install redis
-```
-
-**Windows (Chocolatey):**
-```powershell
-choco install redis-64
-```
-
-**Windows (WSL):**
-```bash
-wsl
-sudo apt install redis-server
-redis-server
-```
-
-#### 3. Configurar `.env` para collab
-
-```env
-APP_MODE=collab
-DATABASE_URL=postgresql+asyncpg://user:pass@localhost/meetagent
-REDIS_URL=redis://localhost:6379/0
-API_HOST=127.0.0.1
-API_PORT=8000
-
-RECORDER_PROVIDER=playwright
-BOT_GOOGLE_EMAIL=seubot@gmail.com
-BOT_GOOGLE_PASSWORD=sua_senha
-BOT_CHROME_PROFILE=./bot_chrome_profile
-BOT_HEADLESS=false
-
-LLM_PROVIDER=ollama
-OLLAMA_BASE_URL=http://localhost:11434/v1
-OLLAMA_MODEL=nemotron-mini
-```
-
-#### 4. Autenticar bot (primeira vez)
-
-```bash
-python infrastructure/recorder/bot_setup.py
-```
-
-- Abre o navegador de forma visível
-- Você faz o login manualmente (ou confirma 2FA)
-- O perfil é salvo em `BOT_CHROME_PROFILE`
-
-#### 5. Iniciar serviços em 4 terminais
-
-**Terminal 1 — Redis:**
-```bash
-redis-server
-```
-
-**Terminal 2 — API FastAPI:**
-```bash
-uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-**Terminal 3 — Worker Celery:**
-```bash
-celery -A worker.tasks worker --loglevel=info
-```
-
-**Terminal 4 — Streamlit:**
-```bash
-streamlit run main.py
-```
-
-Se usar Ollama para LLM local, **Terminal 5:**
-```bash
-ollama serve
-```
-
-#### 6. Usar a aplicação
-
-- Abra http://localhost:8501
-- Confirme que está em modo "Colaborativo"
-- Cole o link do Google Meet
-- Clique em "Enviar bot para a reunião"
-- O bot entra automaticamente e grava o áudio
-- Quando a reunião termina, o processamento é automático
-
----
-
-## Meeting ID e Histórico
-
-Cada reunião processada recebe um `meeting_id` único (UUID) que é:
-
-- **Exibido no histórico:** no sidebar, junto ao título da reunião (8 caracteres truncados)
-- **Mostrado nos detalhes:** abaixo do título quando a reunião é carregada
-- **Copiável:** você pode usar o ID para buscar a reunião depois
-
-Exemplo:
-```
-📋 Sprint Planning — 550e8400
-Meeting ID: `550e8400-e29b-41d4-a716-446655440000`
-```
-
----
-
-## Configuração da LLM para Chat (Ollama)
-
-Quando você carrega uma reunião e faz perguntas, o sistema usa uma LLM local via **Ollama**.
-
-1. Instale Ollama: https://ollama.ai
-
-2. Configure no `.env`:
-   ```env
-   LLM_PROVIDER=ollama
-   OLLAMA_BASE_URL=http://localhost:11434/v1
-   OLLAMA_MODEL=nemotron-mini
-   ```
-
-3. Em outro terminal, inicie o Ollama:
-   ```bash
-   ollama serve
-   ```
-
-4. Puxe o modelo pela primeira vez:
-   ```bash
-   ollama pull nemotron-mini
-   ```
-
----
-
-## Chat com Reunião
-
-Quando você carrega uma reunião processada:
-
-1. **Transcrição carregada:** o texto completo da reunião fica disponível como contexto
-2. **Sistema prompt especialista:** a LLM recebe instruções para responder como assistente de reuniões
-3. **Você faz uma pergunta:** ex "Quem ficou responsável pela tarefa X?"
-4. **LLM responde** baseada na transcrição:
-   - Cita a fonte quando possível (ex: "Conforme mencionado por Speaker 0...")
-   - Responde "Isso não foi mencionado" se não tiver informação
-   - Mantém histórico da conversa
-
-**Exemplos de pergunta:**
-```
-"Quem ficou responsável pelas tarefas?"
-"Qual foi o principal tópico discutido?"
-"Qual era o prazo mencionado?"
-"Resuma as decisões tomadas"
-```
-
----
-
-## Bot Playwright
-
-Permite enviar um bot automático para o Google Meet e gravar áudio.
-
-Se for a primeira vez com conta Google do bot, execute o setup:
-
-```bash
-python infrastructure/recorder/bot_setup.py
-```
-
-- Abre o navegador de forma visível
-- Você faz o login manualmente (ou confirma 2FA)
-- O perfil é salvo em `BOT_CHROME_PROFILE` para uso posterior
-
-Depois, use a UI do Streamlit (modo collab) para enviar o bot para a reunião.
-
-## Checagem rapida
-
-Checagem estatica (sem testes):
-
-```bash
-python -m pyright
-```
-
-## Observacoes
-
-- Este repositorio pode conter duas pastas de ambiente (`venv` e `.venv`); use apenas uma para evitar inconsistencias.
-- Nao versione credenciais reais no `.env`.
-- Testes com `pytest` podem ser executados depois, separadamente.
-- Para bot em modo collab, sempre execute `python infrastructure/recorder/bot_setup.py` uma vez.
-
-## Estado atual
-
-- Imports e nomes de modulo de recorder normalizados para `infrastructure/recorder`.
-- Ajustes de tipagem aplicados em rotas/API e dashboard Streamlit.
-- Dependencias de API/fila adicionadas: `fastapi`, `uvicorn`, `redis`, `celery`.
-- Meeting ID exibido no histórico e detalhes de reunião.
-- Chat com LLM especialista em reuniões via Ollama (local).
-- Modo collab com Playwright bot recorder totalmente funcional.
-- Suporte completo para Windows, macOS e Linux.
-
-## Troubleshooting
-
-### Windows: "redis-server não encontrado"
-
-Se usar WSL (Windows Subsystem for Linux):
-```bash
-# No WSL
-wsl
-redis-server
-```
-
-Ou instale Redis via Chocolatey:
-```powershell
-choco install redis-64
-```
-
-### Windows: Playwright não encontra Chromium
-
-```powershell
-python -m playwright install chromium
-```
-
-### Bot não entra na reunião
-
-- Confirme `RECORDER_PROVIDER=playwright`
-- Confirme `BOT_GOOGLE_EMAIL` e `BOT_GOOGLE_PASSWORD` no `.env`
-- Confirme que `python infrastructure/recorder/bot_setup.py` foi executado
-- Confirme que `BOT_CHROME_PROFILE` existe e contém cookies de login
-
-### Reunião não aparece no histórico após processamento
-
-- Verifique logs do Celery: há erro no processamento?
-- Verifique pasta `data/meetings`: há arquivo JSON?
-- Confirme que `REDIS_URL` e `DATABASE_URL` estão corretos
-
-### Chat não responde
-
-- Confirme que a reunião foi carregada e processada
-- Confirme que `ollama serve` está rodando
-- Verifique logs do terminal Streamlit
-
-## Testes
-
-- Executar testes com `pytest`:
-
-```bash
-pytest -q
-```
-
-- Cheque de tipagem com `pyright`:
-
-```bash
-python -m pyright
-```
-
-## Docker / Compose
-
-- Rodar com Docker Compose (ex.: produção local):
-
-```bash
-docker compose up --build
-```
-
-- Arquivo principal: `docker-compose.yml`.
-
-## Como empacotar (zip)
-
-Se quiser gerar um snapshot do estado atual do projeto (excluindo ambientes virtuais), você pode rodar no diretório raiz:
-
-```bash
-zip -r IA_GOOGLE_MEET_$(date +%Y%m%d).zip . -x "*/.venv/*" "*/venv/*" "*.pyc" "__pycache__/*" "data/*"
-```
-
-O comando acima cria um arquivo `IA_GOOGLE_MEET_YYYYMMDD.zip` no diretório atual ignorando pastas de ambiente, caches e a pasta `data` para reduzir o tamanho.
-
-## Contato
-
-Para dúvidas ou contribuições, abra uma issue ou PR neste repositório.
-
+`requirements-diarization.in` lista as dependências da diarização por pyannote (opcional, não travadas).

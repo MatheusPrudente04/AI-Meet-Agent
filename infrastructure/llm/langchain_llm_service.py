@@ -82,26 +82,34 @@ class LangChainLLMService(ILLMService):
                     temperature=0.2,
                 )
 
-    def _call_ollama_summarize(self, system_prompt: str, user_message: str) -> str:
-        """Chama Ollama via API nativa (com format=json) para sumarização."""
+    def _call_ollama(self, messages: list[dict], as_json: bool) -> str:
+        """Chama o Ollama pela API nativa, pedindo uma janela do tamanho do prompt.
+
+        Sem `num_ctx` o Ollama usa 4096 tokens e descarta o começo do prompt
+        sem avisar — justamente onde está a transcrição (ADR-010). A janela
+        sobe em degraus fixos para o modelo não ser recarregado a cada pedido.
+        """
         import requests as _requests
         settings = get_settings()
-        base = settings.ollama_base_url
-        base = base.replace("/v1", "").replace("/v1/", "")
-        resp = _requests.post(
-            f"{base}/api/chat",
-            json={
-                "model": settings.ollama_model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message},
-                ],
-                "format": "json",
-                "stream": False,
-                "options": {"num_predict": 2000, "temperature": 0.1},
-            },
-            timeout=120,
-        )
+        num_predict = 2000
+        # ~2,6 caracteres por token em português (medido); 2,4 dá folga.
+        needed = int(sum(len(m["content"]) for m in messages) / 2.4) + num_predict
+        if needed > settings.ollama_num_ctx_max:
+            raise LLMServiceError(
+                f"Contexto de ~{needed} tokens excede o limite configurado "
+                f"({settings.ollama_num_ctx_max}). Reduza LLM_CONTEXT_CHARS."
+            )
+        num_ctx = next(c for c in (4096, 8192, 16384, 32768, 65536, 131072) if c >= needed)
+        payload = {
+            "model": settings.ollama_model,
+            "messages": messages,
+            "stream": False,
+            "options": {"num_predict": num_predict, "temperature": 0.1, "num_ctx": num_ctx},
+        }
+        if as_json:
+            payload["format"] = "json"
+        base = settings.ollama_base_url.rstrip("/").removesuffix("/v1")
+        resp = _requests.post(f"{base}/api/chat", json=payload, timeout=600)
         resp.raise_for_status()
         return resp.json()["message"]["content"]
 
@@ -112,7 +120,10 @@ class LangChainLLMService(ILLMService):
             user_message  = self._prompt_builder.build_summarize_user(transcript)
 
             if self._use_ollama_native:
-                content = self._call_ollama_summarize(system_prompt, user_message)
+                content = self._call_ollama([
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ], as_json=True)
             else:
                 messages: list[BaseMessage] = [
                     SystemMessage(content=system_prompt),
@@ -131,9 +142,15 @@ class LangChainLLMService(ILLMService):
     def chat(self, question: str, context: str, history: list[dict], summary_context: str = "", user_id: str | None = None) -> str:
         """Responde pergunta sobre reunião mantendo contexto de conversa."""
         try:
-            messages: list[BaseMessage] = [
-                SystemMessage(content=CHAT_SYSTEM_PROMPT.format(transcript=context))
-            ]
+            system = CHAT_SYSTEM_PROMPT.format(transcript=context)
+            if self._use_ollama_native:
+                return self._call_ollama(
+                    [{"role": "system", "content": system},
+                     *({"role": t["role"], "content": t["content"]} for t in history),
+                     {"role": "user", "content": question}],
+                    as_json=False,
+                )
+            messages: list[BaseMessage] = [SystemMessage(content=system)]
             for turn in history:
                 if turn["role"] == "user":
                     messages.append(HumanMessage(content=turn["content"]))

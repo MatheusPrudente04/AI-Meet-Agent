@@ -68,7 +68,46 @@ Objetivo: URL do Meet entra, reunião resumida sai, sem intervenção e sem bloq
 
 Saída: três reuniões reais seguidas processadas de ponta a ponta no ambiente de compose.
 
+## Sprint 2B — Quem estava e quem falou o quê (ADR-009 fase 2)
+
+Antecipada da Sprint 4 em 2026-11-14: hoje o chat responde "Speaker 0 / Speaker 1" e o produto
+precisa do nome de cada participante. Vem antes do endurecimento porque a implantação atual é
+local; a Sprint 3 continua obrigatória antes de expor a API fora da máquina.
+
+Objetivo: a reunião guarda quem esteve presente e a transcrição atribui cada fala ao nome real.
+
+| Id | Tipo | Tarefa | Pronto quando |
+|----|------|--------|---------------|
+| S2B-1 | chore | Diagnóstico do DOM do Meet: com `BOT_DEBUG_DOM=true` o bot salva amostras dos blocos de participantes e de legendas durante uma reunião real | Arquivo `data/audio/<id>.dom.jsonl` de uma reunião com 2+ pessoas; seletores escolhidos a partir dele |
+| S2B-2 | feat | Extensão: observar legendas (nome de quem fala + instante) e a lista de participantes, e enviar para a API | Eventos chegam em `data/audio/<id>.speakers.jsonl` durante a reunião |
+| S2B-3 | feat | API: `POST /capture/speakers` grava os eventos da sessão | Teste cobre gravação e sessão inválida |
+| S2B-4 | feat | Alinhamento: atribuir a cada segmento do Whisper o nome com maior sobreposição de tempo, tolerando o atraso das legendas; sem evidência, mantém "Speaker N" | Função pura com testes: sobreposição, atraso, troca rápida de falante, ausência de eventos |
+| S2B-5 | feat | `ProcessMeetingUC` aplica o alinhamento; `participants` passa a ser a lista de nomes reais (sem o bot) | Reunião real: transcrição com nomes; campo `participants` com os presentes |
+| S2B-6 | feat | Chat e resumo recebem a lista de participantes no prompt | Pergunta "quem estava na reunião?" devolve os nomes; tarefas saem com responsável pelo nome |
+| S2B-7 | chore | Teste de fumaça dos seletores, executável sob demanda (entra com o S2-6) | Um comando acusa quando o Meet mudou a tela |
+
+Saída: reunião real com 3 pessoas em que o chat lista os 3 nomes e a transcrição atribui as falas corretamente.
+
+**Estado em 2026-11-15:** S2B-1 a S2B-6 implementadas e validadas numa reunião real com a conta
+do dono como anfitriã: o bot esperou a admissão, ligou as legendas, registrou o anfitrião como
+presente e retirou o próprio nome. Detalhes na ADR-009.
+- A leitura das legendas ficou no recorder, não na extensão; `POST /capture/speakers` não existe.
+- **Falta:** validar o nome de terceiros nas legendas com duas ou mais pessoas falando (critério de
+  saída) e a S2B-7.
+
+Limites conhecidos, para não prometer o que o Meet não entrega:
+- O bot enxerga o **nome de exibição** de cada participante, não o e-mail nem um id estável da conta.
+- Quem entrou e nunca falou aparece em `participants`, mas não na transcrição.
+- A atribuição depende das legendas do Meet estarem ligadas (o bot liga) e do Meet reconhecer a fala;
+  trechos sem legenda ficam como "Speaker N".
+- Os seletores do Meet mudam sem aviso; por isso o S2B-7.
+
 ## Sprint 3 — Endurecimento (ADR-007, ADR-008)
+
+**Implementada em 2026-11-15.** Pendências: recriar o venv local em 3.11 (S3-4), ver o CI rodar no
+GitHub depois do push (S3-6) e o critério de saída (implantar num servidor limpo). S3-3 já estava
+feita desde a Sprint 1. Os `print` que restam são saída de linha de comando (`main.py --test`,
+`bot_setup`, `run_bot`).
 
 Objetivo: seguro para expor e reproduzível para implantar.
 
@@ -87,13 +126,18 @@ Saída: implantação em um servidor limpo a partir do repositório, com API fec
 
 ## Sprint 4 — Qualidade e escala (ADR-009, ADR-010)
 
+**Implementada em 2026-11-15.** Medições e decisão na ADR-010. S4-5: exportação Markdown sempre
+ligada, e-mail de tarefas com `SMTP_USER`/`SMTP_PASSWORD`, agenda com `ENABLE_CALENDAR` (dá o
+título da reunião). E-mail e agenda foram testados com serviços simulados, não com SMTP nem com a
+API do Google de verdade.
+
 Objetivo: melhorar o resultado, com medição antes de cada mudança.
 
 | Id | Tipo | Tarefa | Pronto quando |
 |----|------|--------|---------------|
 | S4-1 | chore | Medir tokens por reunião, tempo de transcrição e taxa de falha por provedor | Números registrados na ADR-010 |
 | S4-2 | feat | Estratégia de contexto escolhida na ADR-010 | Reunião de 2 h resume e responde no chat sem erro de contexto |
-| S4-3 | feat | Captura de legendas pela extensão e nomeação de falantes (ADR-009 fase 2, se aceita) | Transcrição mostra nomes reais em reunião de teste com 3 pessoas |
+| S4-3 | — | Movida para a Sprint 2B a pedido do dono do produto | — |
 | S4-4 | feat | Persistir conclusão de tarefas e histórico de chat | Marcar tarefa sobrevive a recarregar a página |
 | S4-5 | feat | Reativar o que já existe e está desligado, um por vez: e-mail de tarefas, exportação Markdown, Google Calendar | Cada um com teste e chave de configuração própria |
 

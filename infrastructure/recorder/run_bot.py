@@ -10,16 +10,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import logging
 import signal
 import sys
 import uuid
 from datetime import datetime
 
+from config.logging_setup import bind_meeting, setup_logging
+
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+setup_logging()
 
 
 def main() -> int:
@@ -40,6 +41,7 @@ def main() -> int:
 
     meeting_id = args.meeting_id or str(uuid.uuid4())
     title = args.title or f"Reunião {datetime.now():%d/%m/%Y %H:%M}"
+    bind_meeting(meeting_id)
     meeting = run_bot_job(meeting_id, args.url, title, recorder=recorder)
 
     print(f"{meeting.id} {meeting.status.value} {meeting.error}".strip(), flush=True)

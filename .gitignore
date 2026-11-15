@@ -63,3 +63,6 @@ data/
 security_config.json
 security_audits/
 .qodo/
+
+# ── Backups do banco ──────────────────────────────────────────────────────
+backups/

@@ -1,0 +1,35 @@
+# LLM / AI
+openai>=1.30
+langchain>=0.2
+langchain-openai>=0.1
+
+# Google Calendar
+google-auth>=2.0
+google-auth-oauthlib>=1.0
+google-api-python-client>=2.0
+
+# Config / infra
+pydantic-settings>=2.0
+python-dotenv>=1.0
+
+# MongoDB
+pymongo>=4.6
+
+# API / Worker
+fastapi>=0.110
+uvicorn>=0.23
+python-multipart>=0.0.9
+redis>=5.0
+celery>=5.3
+requests>=2.31
+
+# Interface
+streamlit>=1.35
+
+# Bot (Playwright)
+playwright>=1.40
+
+# Áudio / Transcrição
+faster-whisper>=1.0
+imageio-ffmpeg>=0.4
+numpy>=1.24

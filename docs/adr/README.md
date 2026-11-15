@@ -14,10 +14,10 @@ Uma ADR só vira código depois de aceita. Ao aceitar, troque o status e a data 
 | 004 | Modos de execução: collab é produção, solo é desenvolvimento | Aceita, implementada em 2026-11-14 | 1 | Sim |
 | 005 | Configuração centralizada e validada na partida | Aceita, implementada em 2026-11-14 | 1 | Sim |
 | 006 | Bot como worker dedicado, despachado por fila | Aceita, implementada em 2026-11-14 (bot no host) | 2 | Sim |
-| 007 | Autenticação e limites da API | Proposta | 3 | Sim |
-| 008 | Runtime e dependências travadas | Proposta | 3 | Sim |
-| 009 | Legendas e identificação de falantes | Proposta (decisão do dono do produto) | 4 | Sim |
-| 010 | Contexto do LLM em reuniões longas | Adiada (medir antes) | 4 | Sim |
+| 007 | Autenticação e limites da API | Aceita, implementada em 2026-11-15 | 3 | Sim |
+| 008 | Runtime e dependências travadas | Aceita, implementada em 2026-11-15 (venv local segue em 3.14) | 3 | Sim |
+| 009 | Legendas e identificação de falantes | Implementada (fase 2 em 2026-11-15) | 2B | Sim |
+| 010 | Contexto do LLM em reuniões longas | Aceita, implementada em 2026-11-15 | 4 | Sim |
 
 ### Desvios na implementação da Sprint 1
 
@@ -207,6 +207,13 @@ em memória. O conjunto de sessões finalizadas vive em memória do processo.
 
 **Trade-off aceito.** Uma chave compartilhada não identifica quem fez a chamada.
 
+**Como ficou (2026-11-15).**
+- O token de captura é `HMAC-SHA256(API_KEY, id da reunião)`: não precisa ser guardado, e o
+  navegador do bot recebe só o token daquela reunião, nunca a chave.
+- `/capture/chunk` só aceita reunião existente em `pending` ou `recording`; fora disso, 409.
+- Sem `API_KEY` (desenvolvimento em solo) a API fica aberta; em collab a partida falha sem ela.
+- A interface Streamlit não passa pela API (usa o container direto), então não usa a chave.
+
 **Reverte-se assim.** Dependência do FastAPI removível por rota.
 
 ---
@@ -230,6 +237,12 @@ e o arquivo é `dockerfile.streamlit`.
 
 **Reverte-se assim.** Os `.in` preservam as faixas atuais.
 
+**Como ficou (2026-11-15).** `requirements.in`, `requirements-dev.in` e `requirements-diarization.in`;
+os dois primeiros compilados em Python 3.11 (comando no README). CI em `.github/workflows/ci.yml`.
+Desvios: a diarização não foi travada (opcional, puxa torch); a imagem do bot-worker não existe,
+porque o bot roda no host (ADR-006); o venv local do desenvolvedor continua em 3.14 e o CI é quem
+garante o 3.11.
+
 ---
 
 ## ADR-009 — Legendas e identificação de falantes
@@ -252,18 +265,69 @@ worker existem sem fonte de dados. Hoje os participantes saem como "Speaker 0/1"
 
 **Trade-off aceito.** A fase 2 depende de seletores do Meet, que mudam sem aviso; precisa de teste de fumaça recorrente.
 
-**Pendente.** O dono do produto decide se a fase 2 entra no roteiro.
+**Fase 2 aceita em 2026-11-14** e antecipada para a Sprint 2B, a pedido do dono do produto: o chat
+precisa responder quem estava na reunião e quem disse o quê, com o nome de cada pessoa.
+
+Detalhamento da fase 2:
+- **Das legendas usamos só o nome de quem fala e o instante, não o texto.** O texto continua vindo
+  do Whisper, que é melhor em português. Assim o idioma configurado nas legendas deixa de importar.
+- **Presença** vem dos blocos de participantes da tela; **autoria das falas** vem das legendas.
+- Os eventos ficam num arquivo por sessão (`<id>.speakers.jsonl`) ao lado do áudio; o documento da
+  reunião guarda o resultado (nomes em `participants` e na transcrição), não os eventos brutos.
+- Alinhamento por sobreposição de tempo entre evento de legenda e segmento do Whisper. Sem
+  evidência suficiente o segmento mantém "Speaker N": nome errado é pior que nome ausente.
+- O Meet expõe ao bot o nome de exibição, não e-mail nem id de conta.
+
+Alternativa descartada na fase 2: detectar o falante pela animação de áudio dos blocos de vídeo.
+Depende de classes CSS ofuscadas, mais instáveis que a região de legendas.
+
+**Como ficou (2026-11-15).** A leitura é feita pelo recorder (Playwright consulta a página a cada
+segundo), não pela extensão. O que as reuniões reais ensinaram:
+- A sala de espera também mostra "Sair da chamada". O bot só se considera admitido quando existe o
+  botão de legendas ou mais de um participante; antes disso o atalho `c` não faz nada.
+- As legendas são ligadas pelo atalho `c` e a tentativa se repete a cada 10 s enquanto a região
+  não existir.
+- `data-use-raw-local-presentation-stream` aparece em todos os blocos e não identifica o do bot.
+  O bloco do bot é o único com o botão "Planos de fundo e efeitos"; o nome dele vira um evento
+  `self` e é retirado da lista de presentes.
+- Com um único participante além do bot, toda fala é atribuída a ele mesmo sem legenda.
+- **Não validado:** nome de terceiros nas legendas com duas ou mais pessoas falando.
 
 ---
 
 ## ADR-010 — Contexto do LLM em reuniões longas
 
-**Contexto.** Resumo e chat enviam a transcrição inteira no prompt. Uma hora de reunião gira em
-torno de 10 a 15 mil tokens (estimativa, não medido). Modelos locais pequenos não comportam isso.
+**Contexto.** Resumo e chat enviavam a transcrição inteira no prompt.
 
-**Decisão.** Adiada. Na Sprint 4, medir tokens por reunião nas gravações reais e a taxa de falha
-por provedor. Só então escolher entre: exigir modelo com janela suficiente em produção,
-resumo em etapas (por trecho, depois consolidação) ou recuperação por trechos no chat.
+**Medições (2026-11-15, reuniões reais, `qwen2.5:7b` no Ollama 0.24).**
+- 2,64 caracteres por token; cerca de 295 tokens por minuto de reunião.
+- 1 h ≈ 18 mil tokens; 2 h ≈ 35 mil, acima da janela do modelo (32.768).
+- O Ollama, sem `num_ctx`, usa 4.096 tokens e **descarta o início do prompt sem avisar**. Qualquer
+  reunião acima de ~13 min já era resumida e respondida com transcrição cortada.
+- Leitura do prompt nesta máquina: ~70 tokens/s (9,7 mil tokens em 140 s).
 
-**Enquanto isso.** O pipeline registra o tamanho da transcrição e falha com erro explícito quando
-o provedor recusa por contexto, em vez de truncar em silêncio.
+**Decisão.**
+- O Ollama é chamado pela API nativa com `num_ctx` do tamanho do prompt, em degraus fixos
+  (4096 … 32768) para não recarregar o modelo a cada pedido. Acima de `OLLAMA_NUM_CTX_MAX` o erro
+  é explícito.
+- `LLM_CONTEXT_CHARS` (padrão 30.000, ~11 mil tokens) é quanto de transcrição vai num pedido.
+- **Resumo:** transcrição maior é dividida por linhas, cada parte é resumida e os resultados são
+  reunidos na ordem da reunião.
+- **Chat:** transcrição maior vai como lista de presentes + resumo + até 8 mil caracteres dos
+  trechos com mais palavras em comum com a pergunta, o mais relacionado primeiro. Com a janela
+  cheia (28 mil caracteres) e trechos em ordem cronológica, o modelo respondeu "não foi
+  mencionado" para um dado que estava no contexto; focado, acertou e caiu de ~150 s para 5–30 s.
+- **Verificado** numa transcrição sintética de 2 h (100 mil caracteres): resumo em 4 partes sem
+  erro (700 s nesta máquina) e chat correto em 4 perguntas de controle.
+- O documento guarda `metrics` (tempos de transcrição e resumo, tamanho, número de partes).
+
+**Alternativas descartadas.**
+- Exigir modelo de janela grande: funciona com provedores pagos, mas a implantação atual é local.
+- Busca vetorial para o chat: nova dependência e índice para manter; o casamento por palavra
+  resolve perguntas diretas. Reavaliar se as respostas em reuniões longas perderem contexto.
+
+**Trade-off aceito.** No resumo em partes a visão geral é a sequência das visões parciais e uma
+tarefa citada em duas partes pode aparecer duas vezes. O chat de reunião longa pode não achar
+resposta que dependa de sinônimo.
+
+**Reverte-se assim.** `LLM_CONTEXT_CHARS` alto desliga a divisão para modelos de janela grande.

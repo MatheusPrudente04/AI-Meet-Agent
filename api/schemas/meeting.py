@@ -10,6 +10,7 @@ class TaskSchema(BaseModel):
     description: str
     responsible: str
     deadline: Optional[str] = None
+    done: bool = False
 
 
 class DecisionSchema(BaseModel):
@@ -43,7 +44,8 @@ class UploadResponse(BaseModel):
 
 class ChatRequest(BaseModel):
     question: str
-    history: list[dict] = []
+    # Omitido = usa a conversa guardada na reunião.
+    history: Optional[list[dict]] = None
 
 
 class ChatResponse(BaseModel):

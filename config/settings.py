@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     api_port: int = 8000
     allowed_origins: list[str] = Field(default=["http://localhost:8501"])
+    # Chave exigida no cabeçalho X-API-Key (ADR-007). Obrigatória em collab.
+    api_key: str = ""
+    max_upload_mb: int = 500
+    capture_max_chunk_mb: int = 10
+    capture_max_session_mb: int = 1024
 
     # ── Áudio ─────────────────────────────────────────────────────────
     max_audio_size_mb: int = 25
@@ -54,7 +59,14 @@ class Settings(BaseSettings):
     # ── Provider LLM ─────────────────────────────────────────────────
     llm_provider: str = "openai"            # "openai" | "ollama" | "openrouter"
 
+    # Quanto de transcrição cabe num único pedido ao LLM (caracteres; ~2,6 por
+    # token em português, medido na ADR-010). Acima disso o resumo é feito em
+    # partes e o chat recebe só os trechos relevantes.
+    llm_context_chars: int = 30000
+
     # Ollama (local)
+    # Teto da janela pedida ao Ollama; o padrão dele (4096) corta reuniões em silêncio.
+    ollama_num_ctx_max: int = 32768
     ollama_base_url: str = "http://localhost:11434/v1"
     ollama_model: str = "nemotron-mini"
 
@@ -68,6 +80,8 @@ class Settings(BaseSettings):
     bot_chrome_profile: str = "./bot_chrome_profile"
     bot_name: str = "Meet Agent"
     bot_headless: bool = False
+    # Diagnóstico: salva amostras do DOM do Meet em data/audio/<id>.dom.jsonl (Sprint 2B)
+    bot_debug_dom: bool = False
     # Endereço da API visto pelo navegador do bot (vazio = http://127.0.0.1:API_PORT)
     capture_endpoint: str = ""
 
@@ -97,6 +111,10 @@ class Settings(BaseSettings):
         return self.llm_provider == "ollama"
 
     @property
+    def email_enabled(self) -> bool:
+        return bool(self.smtp_user and self.smtp_password)
+
+    @property
     def capture_url(self) -> str:
         return self.capture_endpoint or f"http://127.0.0.1:{self.api_port}"
 
@@ -114,6 +132,8 @@ class Settings(BaseSettings):
             missing.append("MONGO_URI")
         if not self.redis_url:
             missing.append("REDIS_URL")
+        if not self.api_key:
+            missing.append("API_KEY")
         if not self.use_local_whisper and not self.openai_api_key:
             missing.append("OPENAI_API_KEY (ou WHISPER_TRANSCRIBER=local)")
         if self.llm_provider == "openai" and not self.openai_api_key:

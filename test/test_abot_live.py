@@ -88,6 +88,11 @@ class FakePage:
             raise PWTimeout("selector not found")
         return None
 
+    closed = False
+
+    def is_closed(self) -> bool:
+        return self.closed
+
     async def evaluate(self, script: str):
         self.evaluated.append(script)
         for key, value in sorted(
@@ -253,3 +258,35 @@ class TestBotVivo:
             f"\nÁudio: {session.audio_path} "
             f"({session.audio_path.stat().st_size / 1024:.1f} KB)"
         )
+
+
+class TestAdmissao:
+    def test_sala_de_espera_nao_conta_como_admitido(self, recorder):
+        """A espera também mostra "Sair da chamada"; só `inCall` libera a gravação."""
+        import asyncio
+        calls = [0]
+
+        def status():
+            calls[0] += 1
+            return {"left": False, "participantCount": 1, "leaveVisible": True, "inCall": calls[0] >= 3}
+
+        page = FakePage()
+        page.eval_map = {MEET_STATUS_JS: status}
+
+        async def run():
+            real_sleep = asyncio.sleep
+            asyncio.sleep = lambda *_: real_sleep(0)
+            try:
+                await recorder._wait_until_admitted(page, timeout=5)
+            finally:
+                asyncio.sleep = real_sleep
+
+        asyncio.run(run())
+        assert calls[0] == 3
+
+    def test_pagina_fechada_encerra_o_monitoramento(self, recorder):
+        import asyncio
+        recorder.END_POLL_INTERVAL = 0
+        page = FakePage()
+        page.closed = True
+        asyncio.run(asyncio.wait_for(recorder._wait_until_meeting_ends(page), timeout=2))

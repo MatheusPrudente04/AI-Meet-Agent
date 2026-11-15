@@ -258,7 +258,8 @@ class WhisperLocalTranscriber(ITranscriber):
                 audio_path=str(wav_path),
             )
 
-            if wav_path.suffix == ".clean.wav":
+            # Path.suffix seria só ".wav": comparar pelo nome, senão o temporário nunca é apagado.
+            if wav_path.name.endswith(".clean.wav"):
                 try:
                     wav_path.unlink()
                 except Exception:

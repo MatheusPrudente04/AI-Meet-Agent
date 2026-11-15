@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Meet Agent Capture",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Captura de áudio da aba do Google Meet via tabCapture para o Meet Agent.",
   "permissions": [
     "tabCapture",

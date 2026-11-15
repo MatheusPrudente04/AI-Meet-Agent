@@ -9,13 +9,13 @@ window.addEventListener('message', (event) => {
   if (event.source !== window) return;
   if (!event.data || event.data.type !== 'MEET_AGENT_CAPTURE') return;
 
-  const { action, session, endpoint, chunkMs } = event.data;
+  const { action, session, endpoint, chunkMs, token } = event.data;
 
   // Dispara ao SW. Passamos um callback vazio só para silenciar lastError;
   // não dependemos da resposta dele.
   try {
     chrome.runtime.sendMessage(
-      { type: 'FROM_PAGE', action, session, endpoint, chunkMs },
+      { type: 'FROM_PAGE', action, session, endpoint, chunkMs, token },
       () => { void chrome.runtime.lastError; } // absorve "port closed" sem quebrar
     );
   } catch (e) {
