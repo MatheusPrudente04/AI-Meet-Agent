@@ -52,7 +52,7 @@ Regras:
 class SentimentAnalyzer:
     """
     Analisa sentimento e engajamento de uma transcrição.
-    Classe pura — recebe o cliente LLM via injeção.
+    Classe pura — recebe o cliente do modelo (infrastructure/llm/model_client.py) via injeção.
     """
 
     def __init__(self, llm_client) -> None:
@@ -69,14 +69,11 @@ class SentimentAnalyzer:
             SentimentResult com análise completa
         """
         try:
-            from langchain_core.messages import SystemMessage, HumanMessage
-
             messages = [
-                SystemMessage(content=SENTIMENT_PROMPT),
-                HumanMessage(content=f"TRANSCRIÇÃO:\n\n{transcript}"),
+                {"role": "system", "content": SENTIMENT_PROMPT},
+                {"role": "user", "content": f"TRANSCRIÇÃO:\n\n{transcript}"},
             ]
-            response = self._client.invoke(messages)
-            return self._parse(response.content)
+            return self._parse(self._client.complete(messages, as_json=True))
 
         except Exception as e:
             raise LLMServiceError(f"Análise de sentimento falhou: {str(e)}") from e

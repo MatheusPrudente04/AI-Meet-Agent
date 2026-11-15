@@ -16,6 +16,9 @@ Streamlit / API ──► fila "bot" ──► worker do bot (host) ──► Ch
                     fila "celery" ──► worker de processamento ──► Whisper ──► nomes ──► LLM ──► MongoDB
 ```
 
+- O agente (resumo e chat) é um grafo LangGraph regido pelo contrato `SPEC_CONTRACT.md`: cada
+  resposta do chat é conferida contra regras do contrato antes de chegar ao usuário (ADR-014).
+  As decisões saem classificadas: aprovada, proposta, pendente etc.
 - Um único pipeline (`use_cases/process_meeting.py`) faz áudio → transcrição → resumo e grava o
   status a cada etapa: `pending`, `recording`, `transcribing`, `summarizing`, `done`, `error`.
 - O texto vem do Whisper. As legendas do Meet são usadas só para saber **quem** falou e quando.
@@ -157,8 +160,11 @@ No Teams e no Zoom o bot entra como convidado pelo navegador, com o nome `BOT_NA
 ## Testes e dependências
 
 ```bash
-python -m pytest            # o teste com reunião real só roda com MEET_TEST_URL exportada
+python -m pytest              # o teste com reunião real só roda com MEET_TEST_URL exportada
+python -m scripts.eval_agent  # avalia o agente contra o contrato com o LLM de verdade (minutos)
 ```
+
+Rode a avaliação depois de mudar o contrato, os prompts ou o modelo: ela não pode piorar.
 
 As versões exatas ficam em `requirements.txt` e `requirements-dev.txt`, geradas a partir dos `.in`
 em Python 3.11. Para atualizar:

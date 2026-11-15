@@ -213,6 +213,10 @@ limpa as sessões vencidas sem afetar ninguém logado.
 
 ## Sprint 8 — Agente com LangGraph e contrato (ADR-014)
 
+**Implementada em 2026-11-15.** Avaliação de 3/8 (antes) para 8/8 (depois), em duas rodadas; números na ADR-014.
+O contrato ficou em `SPEC_CONTRACT.md`, na raiz, onde o dono o colocou (não em `docs/agent/`).
+Pendente para depois: memória entre reuniões do mesmo usuário (§14 do contrato).
+
 Objetivo: o chat e o resumo viram um grafo explícito (LangGraph) que aplica o contrato do agente
 em cada resposta, sem perder o que a ADR-010 resolveu para reuniões longas.
 

@@ -61,6 +61,8 @@ class Settings(BaseSettings):
 
     # ── Provider LLM ─────────────────────────────────────────────────
     llm_provider: str = "openai"            # "openai" | "ollama" | "openrouter"
+    # Contrato do agente (ADR-014): vai inteiro no prompt de sistema do chat e do resumo.
+    agent_contract_path: str = "SPEC_CONTRACT.md"
 
     # Quanto de transcrição cabe num único pedido ao LLM (caracteres; ~2,6 por
     # token em português, medido na ADR-010). Acima disso o resumo é feito em

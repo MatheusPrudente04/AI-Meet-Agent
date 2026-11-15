@@ -20,7 +20,7 @@ from typing import Optional
 from config.settings import get_settings
 from domain.entities.meeting import Meeting, MeetingStatus
 from domain.entities.user import User
-from infrastructure.llm.langchain_llm_service import LangChainLLMService
+from infrastructure.llm.meeting_agent import MeetingAgent
 from use_cases.chat_with_meeting import ChatWithMeetingUC
 from use_cases.process_meeting import ProcessMeetingInput, ProcessMeetingUC
 from use_cases.summarize_meeting import SummarizeMeetingUC
@@ -68,7 +68,7 @@ def _build_repository(settings):
 class Container:
     def __init__(self) -> None:
         settings = get_settings()
-        llm = LangChainLLMService()
+        llm = MeetingAgent()
 
         self._is_collab = settings.is_collab
         # Opcional (ENABLE_CALENDAR): dá título à reunião a partir da agenda.

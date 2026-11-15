@@ -16,6 +16,8 @@ class TaskSchema(BaseModel):
 class DecisionSchema(BaseModel):
     description: str
     context: str = ""
+    status: str = Field("", description="aprovada, condicionada, proposta, pendente, rejeitada ou inconclusiva; "
+                                        "vazio em resumos anteriores ao contrato do agente")
 
 
 class SummarySchema(BaseModel):

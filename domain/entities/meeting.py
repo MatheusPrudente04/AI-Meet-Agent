@@ -30,9 +30,12 @@ class Task:
 class Decision:
     description: str
     context: str = ""
+    # §7 do contrato: aprovada, condicionada, proposta, pendente, rejeitada ou inconclusiva.
+    # Vazio = resumo anterior ao contrato (ADR-014).
+    status: str = ""
 
     def __str__(self) -> str:
-        return f"• {self.description}"
+        return f"• {self.description}" + (f" [{self.status}]" if self.status else "")
 
 
 @dataclass

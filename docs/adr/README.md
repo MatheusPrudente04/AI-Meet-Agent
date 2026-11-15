@@ -21,7 +21,7 @@ Uma ADR só vira código depois de aceita. Ao aceitar, troque o status e a data 
 | 011 | Login de usuários e sessões no MongoDB | Aceita, implementada em 2026-11-15 (ampliada na Sprint 7) | 5, 7 | Com migração |
 | 012 | Bot multiplataforma (Meet, Teams, Zoom; Discord adiado) | Aceita; Meet validado, Teams e Zoom não | 5 | Sim |
 | 013 | Contrato OpenAPI para um novo front | Aceita, implementada em 2026-11-15 | 5 | Sim |
-| 014 | Agente em LangGraph com contrato verificável | Proposta | 8 | Sim |
+| 014 | Agente em LangGraph com contrato verificável | Aceita, implementada em 2026-11-15 | 8 | Sim |
 | 015 | Concorrência: filas por etapa e justiça entre usuários | Aceita em 2026-11-15 | 9 | Sim |
 | 016 | Bot em container (Windows e servidor) | Aceita em 2026-11-15 | 10 | Sim |
 
@@ -477,10 +477,11 @@ front precisar: hoje o acompanhamento é consulta periódica a `/status`.
 
 ## ADR-014 — Agente em LangGraph com contrato verificável
 
-**Status.** Proposta (2026-11-15). Depende de receber o contrato do agente (S8-1).
+**Status.** Aceita e implementada em 2026-11-15, com o contrato `SPEC_CONTRACT.md`
+(MEETING-INTELLIGENCE-001) entregue pelo dono do produto.
 
-**Contexto.** O agente é uma chamada única ao LLM com as regras do contrato no prompt
-(`infrastructure/llm/langchain_llm_service.py`). Nada confere se a resposta cumpriu as regras;
+**Contexto.** O agente era uma chamada única ao LLM com as regras no prompt
+(`infrastructure/llm/langchain_llm_service.py`, removido). Nada confere se a resposta cumpriu as regras;
 uma resposta fora do contrato chega ao usuário. O dono do produto pediu a migração para LangGraph
 com um contrato novo.
 
@@ -506,6 +507,48 @@ com um contrato novo.
 **Reverte-se assim.** A implementação atual fica até a avaliação aprovar a nova; a troca é no `container.py`.
 
 ---
+
+**Como ficou (2026-11-15).**
+- `infrastructure/llm/meeting_agent.py` (`MeetingAgent`): os dois grafos, com o contrato inteiro
+  (`AGENT_CONTRACT_PATH`, padrão `SPEC_CONTRACT.md`) no início do prompt de sistema.
+- `use_cases/contract_checks.py`: o que é conferido sem outro modelo. A resposta é reprovada se
+  diz "não foi mencionado" e responde mesmo assim, se cita entre aspas algo que não está na
+  transcrição, se reproduz uma linha `[mm:ss] Nome:` com horário ou autor trocados, se atribui
+  fala a quem não aparece na reunião ou se sai do português sem a pergunta pedir.
+- **Decisões ganharam estado** (§7): `aprovada`, `condicionada`, `proposta`, `pendente`,
+  `rejeitada` ou `inconclusiva`. Estado desconhecido vira `inconclusiva`, nunca `aprovada`.
+  Aparece na interface, na API (`DecisionSchema.status`) e na exportação. Resumos antigos ficam
+  com o estado vazio.
+- **Responsável só com atribuição explícita:** nome que não aparece na transcrição vira
+  "Não definido".
+- O chat recebe as decisões já classificadas pelo resumo, para responder "o que foi aprovado"
+  com a mesma classificação.
+- `infrastructure/llm/model_client.py` substitui o LangChain: Ollama pela API nativa (ADR-010)
+  e OpenAI/OpenRouter pelo SDK `openai`. Dependências `langchain`, `langchain-openai`,
+  `tiktoken` e `regex` saíram; `langgraph` entrou.
+
+**Medido** com `python -m scripts.eval_agent` (reunião sintética com decisão aprovada, proposta
+adiada, tarefa com e sem dono e uma divergência; `qwen2.5:7b` no Ollama local):
+
+| Agente | Checagens | Falhas típicas |
+|---|---|---|
+| LangChain (antes) | 3 de 8 | migração para a nuvem listada como decisão aprovada; "isso não foi mencionado" seguido de resposta; "todos concordaram", ignorando a discordância; "o que achou" respondido com "não foi mencionado" |
+| LangGraph + contrato | 8 de 8, em duas rodadas | em cada rodada o verificador barrou uma resposta com linha da transcrição de horário trocado, e a segunda tentativa saiu correta |
+
+Reunião sintética de 2 h (96 mil caracteres, 4 partes), mesma máquina e modelo da ADR-010:
+
+| | LangChain (antes) | LangGraph + contrato |
+|---|---|---|
+| Resumo em partes | 700 s, sem erro | 630 s, sem erro |
+| "Qual o orçamento do projeto Aurora?" (dado plantado no meio) | "não foi mencionado" (errado), 153 s | 42 mil reais (certo), 44 s |
+| "Quem estava na reunião?" | certo, 141 s | certo, 33 s |
+
+Custo: o contrato soma ~25 mil caracteres a cada pedido. O resumo da reunião de teste foi de
+18–25 s para 27–51 s; a pergunta "o que achou da reunião" leva ~60 s.
+
+**Limites.** As checagens são por regra fixa: não pegam, sozinhas, uma proposta chamada de
+decisão; isso depende do prompt e da classificação do resumo, e é o que a avaliação mede.
+A memória entre reuniões (§14) ainda não existe: o agente avisa que só enxerga a reunião aberta.
 
 ## ADR-015 — Concorrência: filas por etapa e justiça entre usuários
 

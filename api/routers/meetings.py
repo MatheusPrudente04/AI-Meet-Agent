@@ -202,7 +202,7 @@ def _to_response(m: Meeting, with_summary: bool) -> MeetingStatusResponse:
                 for t in m.summary.tasks
             ],
             decisions=[
-                DecisionSchema(description=d.description, context=d.context)
+                DecisionSchema(description=d.description, context=d.context, status=d.status)
                 for d in m.summary.decisions
             ],
         )

@@ -67,7 +67,7 @@ class MarkdownExporter(IExporter):
             if s.decisions:
                 lines.append("\n## Decisões\n")
                 for dec in s.decisions:
-                    lines.append(f"- **{dec.description}**")
+                    lines.append(f"- **{dec.description}**" + (f" — _{dec.status}_" if dec.status else ""))
                     if dec.context:
                         lines.append(f"  > {dec.context}")
 

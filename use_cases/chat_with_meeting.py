@@ -70,7 +70,7 @@ class ChatWithMeetingUC:
     def _context(self, meeting: Meeting, question: str) -> str:
         full = meeting.transcript_for_llm
         if len(full) <= self._max_chars:
-            return full
+            return _decisions_block(meeting) + full
         summary = meeting.summary.formatted if meeting.summary else ""
         excerpts = select_relevant(
             meeting.transcript_formatted or meeting.transcript_text,
@@ -84,3 +84,13 @@ class ChatWithMeetingUC:
             "Se a resposta não estiver neles nem no resumo, diga que não encontrou nos trechos consultados.\n\n"
             f"{excerpts}"
         )
+
+
+def _decisions_block(meeting: Meeting) -> str:
+    """Estado de cada decisão, como o resumo classificou (§7 do contrato): o chat
+    responde "o que foi aprovado" com a mesma classificação do resumo."""
+    decisions = [d for d in (meeting.summary.decisions if meeting.summary else []) if d.status]
+    if not decisions:
+        return ""
+    lines = "\n".join(f"- [{d.status}] {d.description}" for d in decisions)
+    return f"DECISÕES REGISTRADAS NO RESUMO (estado de cada uma; confira na transcrição):\n{lines}\n\n"

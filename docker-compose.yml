@@ -6,9 +6,12 @@
 # Portas no host: API 8001, Streamlit 8501, Redis 6380, Mongo 27018
 # (fora das portas padrão para não colidir com serviços já instalados na máquina).
 
+# A imagem é construída uma vez, pelo serviço api; worker e streamlit a reutilizam.
+# Com `build` nos três, o compose exportava a mesma imagem três vezes em paralelo e
+# enchia o disco do Docker (2026-11-15).
 x-app: &app
-  build: .
   image: meet-agent
+  pull_policy: never   # imagem local, nunca do Docker Hub
   env_file: .env
   environment: &app-env
     APP_MODE: collab
@@ -31,6 +34,7 @@ x-app: &app
 services:
   api:
     <<: *app
+    build: .
     command: python main.py --api
     ports:
       - "8001:8000"

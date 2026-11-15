@@ -7,7 +7,7 @@ Modo collab: envia o bot para a reunião (processo separado) → a reunião apar
 
 Telas:
   - 📋 Reuniões   → dashboard da reunião (sem chat integrado)
-  - 💬 Chat       → chat interativo dedicado com Ollama + LangChain
+  - 💬 Chat       → chat interativo com o agente (LangGraph + contrato)
 """
 
 import sys, uuid
@@ -473,8 +473,11 @@ if st.session_state.page == "meetings":
 
             if summary.decisions:
                 st.markdown("### Decisões")
+                _DECISION_ICON = {"aprovada": "✅", "condicionada": "⚖️", "proposta": "💡", "pendente": "⏳",
+                                  "rejeitada": "❌", "inconclusiva": "❔"}
                 for dec in summary.decisions:
-                    with st.expander(dec.description):
+                    label = f"{_DECISION_ICON.get(dec.status, '•')} {dec.description}" + (f" ({dec.status})" if dec.status else "")
+                    with st.expander(label):
                         st.write(dec.context or "Sem contexto adicional.")
 
             render_extra_sections(summary)
@@ -499,7 +502,7 @@ if st.session_state.page == "meetings":
 elif st.session_state.page == "chat":
 
     st.title("💬 Chat Interativo com IA")
-    st.caption("Ollama · PromptBuilder · LangChain")
+    st.caption("Agente LangGraph · contrato MEETING-INTELLIGENCE-001")
 
     try:
         meetings = my_meetings()

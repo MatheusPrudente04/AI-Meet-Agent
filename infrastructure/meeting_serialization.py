@@ -37,7 +37,7 @@ def meeting_from_dict(data: dict) -> Meeting:
                 for t in s.get("tasks") or []
             ],
             decisions=[
-                Decision(d["description"], d.get("context", ""))
+                Decision(d["description"], d.get("context", ""), d.get("status", ""))
                 for d in s.get("decisions") or []
             ],
             created_at=_to_datetime(s.get("created_at")),

@@ -88,7 +88,9 @@ def test_tarefa_concluida_e_medicoes_sobrevivem_a_ida_e_volta(tmp_path):
 
 
 def test_ollama_pede_janela_do_tamanho_do_prompt(monkeypatch):
-    import infrastructure.llm.langchain_llm_service as mod
+    from types import SimpleNamespace
+    from infrastructure.llm.meeting_agent import MeetingAgent
+    from infrastructure.llm.model_client import ModelClient
     sent = []
 
     class Resp:
@@ -97,8 +99,9 @@ def test_ollama_pede_janela_do_tamanho_do_prompt(monkeypatch):
 
     import requests
     monkeypatch.setattr(requests, "post", lambda url, json, timeout: sent.append(json) or Resp())
-    svc = mod.LangChainLLMService(llm=object())
-    svc._use_ollama_native = True
+    cfg = SimpleNamespace(llm_provider="ollama", openai_api_key="", ollama_num_ctx_max=32768,
+                          ollama_model="m", ollama_base_url="http://h:11434/v1")
+    svc = MeetingAgent(model=ModelClient(cfg), contract="")
     assert svc.chat("oi?", context="x" * 30000, history=[{"role": "user", "content": "antes"}]) == "ok"
     assert sent[0]["options"]["num_ctx"] == 16384 and "format" not in sent[0]
     assert [m["role"] for m in sent[0]["messages"]] == ["system", "user", "user"]
