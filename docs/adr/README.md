@@ -26,6 +26,8 @@ Uma ADR só vira código depois de aceita. Ao aceitar, troque o status e a data 
 | 016 | Bot em container (Windows e servidor) | Aceita, implementada em 2026-11-15 (falta Windows) | 10 | Sim |
 | 017 | Ferramentas do agente no chat: e-mail e documentos | Implementada em 2026-11-15 | — | Sim |
 | 018 | Credenciamento do bot pela interface | Implementada em 2026-11-15 | — | Sim |
+| 019 | Observabilidade centralizada (métricas, logs, batimento dos workers) | Implementada em 2026-11-15 | — | Sim |
+| 020 | Memória entre reuniões (§14 do contrato) | Implementada em 2026-11-15 | — | Sim |
 
 ### Desvios na implementação da Sprint 1
 
@@ -758,3 +760,56 @@ uma conferência e outra, o bot falha ao entrar; "Reconectar" refaz.
 
 **Reverte-se assim.** Tirar a checagem de `bot_status` de `dispatch_bot`; o `bot_setup` do
 terminal continua funcionando.
+
+
+---
+
+## ADR-019 — Observabilidade centralizada
+
+**Status.** Implementada em 2026-11-15, a pedido do dono do produto.
+
+**Decisão.** Tudo no Redis que os serviços já compartilham, sem serviço novo:
+- **Logs**: cada processo (api, worker-transcribe, worker-llm, bot, streamlit) manda suas linhas
+  ao stream `obs:logs` (últimas 50.000), com serviço, nível e id da reunião. A API registra lá
+  todo 5xx e todo pedido acima de 5 s. Cada e-mail enviado deixa uma linha (tipo, destino, assunto).
+- **Métricas**: contadores e amostras de duração (últimas 2.000 por série): pedidos HTTP por rota
+  e status, chamadas ao LLM por tipo, etapas do pipeline, gravações do bot, e-mails por tipo e
+  resultado, documentos por formato.
+- **API `/observability`** (admin ou chave de serviço): `summary` (JSON para painel: workers e o
+  que cada um faz, filas, reuniões por status, contas, bot, LLM, agenda, latências p50/p95, erros,
+  disco), `metrics` (formato Prometheus), `logs` (filtro por reunião, serviço, nível e texto) e
+  `meetings/{id}` (linha do tempo de uma reunião em todos os serviços). Página no Streamlit para o admin.
+- **Batimento dos workers.** O `/health` perguntava ao Celery quem estava vivo (`inspect`), mas
+  um worker de pool solo ocupado não responde: durante toda transcrição e todo resumo o health
+  dizia "sem worker" e devolvia 503 (medido: 7 falsos 503 num teste curto; numa reunião de 2 h
+  o alerta tocaria por meia hora). Agora cada worker grava um batimento a cada 10 s numa thread
+  própria (TTL 30 s), com a tarefa atual. Gossip, mingle e heartbeat do Celery desligados (só
+  geravam "missed heartbeat"/"clocks out of sync" no log).
+
+**Trade-off aceito.** Redis fora desliga a telemetria (sem erro para quem mede); logs e amostras
+são janelas recentes, não histórico. Histórico longo: Prometheus raspando `/observability/metrics`.
+
+**Reverte-se assim.** Tirar o `RedisLogHandler` do `setup_logging` e o middleware da API.
+
+---
+
+## ADR-020 — Memória entre reuniões (§14 do contrato)
+
+**Status.** Implementada em 2026-11-15 (era pendência da Sprint 8).
+
+**Decisão.**
+- **Continuidade sem LLM extra**: o contexto do chat recebe, das outras reuniões do mesmo dono,
+  as decisões (com o estado) e as tarefas abertas dos resumos já gravados, só as ligadas à
+  pergunta e ao assunto da reunião aberta (até 4.000 caracteres), cada uma marcada como
+  REUNIÃO ANTERIOR ou POSTERIOR, com título e data. A reunião aberta passa a dizer o próprio
+  título e data: sem isso o modelo trocou "esta reunião" pela anterior.
+- **Memória procedural**: ferramenta `remember` guarda o que o usuário pede ("prefiro atas
+  curtas"); vale em todas as reuniões dele; coleção `memories`; `GET/DELETE /memory` e lista
+  em "Minha conta". Nunca cruza usuários (consulta sempre pelo dono).
+
+**Medido (2026-11-15, duas reuniões sintéticas).** "O que mudou desde a reunião anterior?":
+certo nas duas rodadas, com datas. Nota guardada e respeitada numa ata de outra reunião.
+**Limite**: perguntado na reunião antiga se a decisão foi aprovada, o modelo local (7B) responde
+certo para aquela reunião mas não cita a revisão posterior que está no contexto.
+
+**Reverte-se assim.** Passar `memory_store=None` ao `ChatWithMeetingUC`.

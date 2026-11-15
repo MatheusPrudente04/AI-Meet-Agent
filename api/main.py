@@ -1,10 +1,11 @@
 """api/main.py — FastAPI. A especificação da API está em /docs (Swagger) e em
 docs/api/openapi.json (gerada por `python -m api.export_openapi`)."""
+import logging
 from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from api import chat
-from api.routers import auth, bot, capture, meetings
+from api.routers import auth, bot, calendar, capture, meetings, memory, observability
 from api.routers.meetings import AUDIO_SUFFIXES
 from api.schemas.meeting import ConfigResponse, PlatformSchema
 from api.security import current_principal
@@ -51,6 +52,9 @@ TAGS = [
     {"name": "chat", "description": "Perguntas sobre uma reunião já transcrita."},
     {"name": "admin", "description": "Só para administradores (a primeira conta): usuários e limpeza de sessões."},
     {"name": "sistema", "description": "Configuração para o front e verificação de saúde. Sem autenticação."},
+    {"name": "agenda", "description": "Próximas reuniões do Google Calendar (ENABLE_CALENDAR), com o link para mandar o bot."},
+    {"name": "memória", "description": "Notas que o usuário pediu para o agente lembrar entre reuniões (§14 do contrato)."},
+    {"name": "observabilidade", "description": "Métricas (JSON e Prometheus), logs centralizados de todos os serviços e linha do tempo por reunião. Só administrador."},
     {"name": "bot", "description": "Credenciamento da conta do Google do bot: o envio do bot só é liberado com status ready."},
     {"name": "capture", "description": "Uso interno do bot (áudio em chunks). O front não chama."},
 ]
@@ -65,6 +69,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+SLOW_REQUEST_S = 5.0
+
+
+@app.middleware("http")
+async def _http_metrics(request, call_next):
+    """Contagem e duração por rota (o molde, ex. /meetings/{meeting_id}, não o id) e status."""
+    import time
+    from infrastructure import observability as obs
+    t0 = time.monotonic()
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        route = request.scope.get("route")
+        path = getattr(route, "path", "outro")
+        labels = {"method": request.method, "route": path}
+        elapsed = time.monotonic() - t0
+        obs.observe("http_request_seconds", elapsed, labels)
+        obs.incr("http_requests_total", {**labels, "status": str(status)})
+        # No log central só o que pede atenção: erro do servidor ou pedido lento.
+        if status >= 500 or elapsed > SLOW_REQUEST_S:
+            logging.getLogger("api.http").warning("%s %s → %s em %.1fs", request.method, path, status, elapsed)
+
+
 _auth = [Depends(current_principal)]
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(auth.admin_router, prefix="/admin", tags=["admin"])
@@ -73,6 +103,9 @@ app.include_router(chat.router, prefix="/meetings", tags=["chat"], dependencies=
 # /capture/* tem autenticação própria: token por sessão (api/security.py).
 app.include_router(capture.router, prefix="/capture", tags=["capture"])
 app.include_router(bot.router, prefix="/bot", tags=["bot"], dependencies=_auth)
+app.include_router(calendar.router, prefix="/calendar", tags=["agenda"], dependencies=_auth)
+app.include_router(memory.router, prefix="/memory", tags=["memória"], dependencies=_auth)
+app.include_router(observability.router, prefix="/observability", tags=["observabilidade"], dependencies=_auth)
 
 
 @app.get("/config", response_model=ConfigResponse, tags=["sistema"], summary="O que está ligado nesta instalação")
@@ -95,16 +128,14 @@ def config():
 
 
 def _workers() -> dict:
-    """Workers vivos por fila (ADR-015). Sem worker em `transcribe` ou `llm`, as reuniões
-    ficam paradas na fila sem erro nenhum: é isso que o alerta da S11-4 precisa ver.
-    O bot é informativo: pode rodar no host e nem sempre está ligado."""
-    from worker.tasks import celery_app
-    try:
-        replies = celery_app.control.inspect(timeout=1).active_queues() or {}
-    except Exception as exc:
-        return {"workers": f"erro: {type(exc).__name__}"}
-    serving = {q["name"] for queues in replies.values() for q in queues}
-    return {f"worker_{q}" if q != "bot" else "bot": "ok" if q in serving else "sem worker"
+    """Workers vivos por fila, pelo batimento que cada um grava no Redis (ADR-015). Sem worker em
+    `transcribe` ou `llm`, as reuniões ficam paradas na fila sem erro nenhum: é isso que o alerta
+    da S11-4 precisa ver. O bot é informativo: pode rodar no host e nem sempre está ligado."""
+    from infrastructure import observability as obs
+    alive = obs.workers()
+    if alive is None:
+        return {"workers": "erro: sem leitura do Redis"}
+    return {f"worker_{q}" if q != "bot" else "bot": "ok" if alive.get(q) else "sem worker"
             for q in ("transcribe", "llm", "bot")}
 
 

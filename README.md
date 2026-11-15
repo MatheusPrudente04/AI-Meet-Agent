@@ -74,6 +74,15 @@ BOT_CHROME_PROFILE=./bot_chrome_profile_2 python main.py --bot-worker
 Teste de carga, sempre contra um banco de rascunho com cadastro aberto:
 `python -m scripts.load_test --api http://localhost:8001 --audio reuniao.wav --uploads 4,1,1`.
 
+### Acessar de outro aparelho da mesma rede
+
+A interface e a API ficam abertas na rede local: no celular ou em outro computador no mesmo Wi-Fi,
+abra `http://<ip-desta-máquina>:8501` (no macOS: `ipconfig getifaddr en0`) ou
+`http://<nome-da-máquina>.local:8501`. O IP pode mudar quando o roteador renova o endereço.
+Mongo, Redis e a tela do bot (noVNC, porta 6080) ficam só nesta máquina, porque não têm senha:
+por isso o **credenciamento do bot** é feito a partir desta máquina. É HTTP sem criptografia;
+fora da rede de casa ou do escritório, use o compose de produção com HTTPS.
+
 ### Credenciar o bot (pela interface)
 
 Na tela **Enviar bot**, o administrador clica em **🤖 Credenciar bot**. Aparece "Criando bot...";
@@ -208,6 +217,31 @@ Além de responder, o chat executa dois pedidos (ADR-017):
   "exporte as decisões em CSV", "um dashboard em HTML com as falas por participante". No HTML,
   cada tabela com números vira um gráfico de barras; os números (falas, tarefas, decisões) são
   contados pelo sistema, não pelo modelo.
+
+## Agenda do Google (opcional)
+
+1. No [Google Cloud Console](https://console.cloud.google.com): ative a **Google Calendar API** e crie
+   uma credencial **OAuth → App para computador**. Baixe o JSON e salve em
+   `data/google/credentials.json` (a pasta `data/` não vai para o git nem para a imagem).
+2. No computador, uma vez: `python -m infrastructure.calendar.calendar_setup`. Abre o navegador para
+   autorizar a leitura da agenda e grava `data/google/token.json`.
+3. `ENABLE_CALENDAR=true` no `.env` e `docker compose up -d`.
+
+Na tela **Enviar bot** aparecem as próximas reuniões da agenda (Meet, Zoom ou Teams) com o botão
+**Mandar**, e o bot enviado por link recebe o título do evento. É uma agenda por instalação.
+
+## Memória entre reuniões
+
+O chat considera as decisões e tarefas abertas das suas outras reuniões ligadas à pergunta
+("o que mudou desde a reunião anterior?") e diz de qual reunião veio cada item. Peça também
+"lembre que prefiro atas em tópicos": a nota vale em todas as suas conversas e fica em
+**Minha conta → Memória do agente**, onde dá para apagar (ADR-020).
+
+## Observabilidade
+
+Para o admin: página **📈 Observabilidade** no Streamlit e a API `/observability` (`summary`,
+`metrics` no formato Prometheus, `logs` com filtros, `meetings/{id}` com a linha do tempo de uma
+reunião em todos os serviços). Detalhes na ADR-019.
 
 ## Operação
 

@@ -66,3 +66,8 @@ security_audits/
 
 # ── Backups do banco ──────────────────────────────────────────────────────
 backups/
+
+# Google OAuth (Calendar): segredo do cliente e token de acesso nunca vão para o git
+credentials.json
+token.json
+*client_secret*.json

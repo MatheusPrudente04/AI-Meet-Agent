@@ -47,3 +47,8 @@ venv/
 docs/
 test/
 backups
+
+# Google OAuth: entra no container pelo volume ./data/google, nunca pela imagem
+credentials.json
+token.json
+*client_secret*.json

@@ -62,6 +62,10 @@ class MongoAuthStore:
     def count_users(self) -> int:
         return self._users.count_documents({})
 
+    def count_active_sessions(self) -> int:
+        from use_cases.auth import utcnow
+        return self._sessions.count_documents({"expires_at": {"$gt": utcnow()}})
+
     def update_user(self, user_id: str, fields: dict) -> None:
         self._users.update_one({"_id": user_id}, {"$set": fields})
 

@@ -36,3 +36,10 @@ class IMeetingRepository(ABC):
     def delete(self, meeting_id: str) -> None:
         """Remove uma reunião pelo ID"""
         ...
+
+    def count_by_status(self) -> dict[str, int]:
+        """Reuniões por status (observabilidade). Implementações podem contar no banco."""
+        counts: dict[str, int] = {}
+        for m in self.list_all():
+            counts[m.status.value] = counts.get(m.status.value, 0) + 1
+        return counts

@@ -51,7 +51,11 @@ def load_contract(path: str) -> str:
 CHAT_RULES = """REGRAS DE OPERAÇÃO NESTE SISTEMA (complementam o contrato acima):
 1. Você responde sobre UMA reunião, usando apenas o CONTEXTO DA REUNIÃO abaixo. Em reuniões longas o
    contexto traz o resumo e só os trechos da transcrição ligados à pergunta.
-2. Você não tem acesso a outras reuniões. Se perguntarem sobre elas, informe essa limitação (§14).
+2. Outras reuniões do mesmo usuário só chegam a você pelo bloco "REGISTROS DE OUTRAS REUNIÕES" (§14),
+   quando ele existir no contexto: cite de qual reunião e data veio cada item e não trate decisão
+   antiga como vigente sem checar se foi revista. Ao responder sobre uma decisão da reunião aberta,
+   diga também se uma REUNIÃO POSTERIOR do bloco a revisou. O que não estiver nesse bloco, você não
+   acessa: diga isso.
 3. Se o assunto não aparece no contexto, responda só: "Isso não foi mencionado durante a reunião."
    Nunca diga isso e depois responda sobre o assunto.
 4. Ao citar uma fala entre aspas, copie exatamente o texto da transcrição. Só atribua falas a quem as fez.
@@ -62,7 +66,9 @@ CHAT_RULES = """REGRAS DE OPERAÇÃO NESTE SISTEMA (complementam o contrato acim
 8. Ferramentas: use `send_email` só quando o usuário pedir para enviar um e-mail e informar o
    endereço; nunca invente endereço. Se pedirem um e-mail sem dizer o endereço, não use a
    ferramenta: peça o endereço de cada destinatário. Use `create_document` só quando ele pedir um arquivo (PDF,
-   Word, Excel, CSV, planilha, HTML, dashboard, gráfico, documento, ata em arquivo). O texto do e-mail ou do documento segue as mesmas regras de
+   Word, Excel, CSV, planilha, HTML, dashboard, gráfico, documento, ata em arquivo); se ele pedir
+   "aqui", "no chat" ou "escreva", responda em texto. Use `remember` só
+   quando o usuário pedir para você lembrar de algo ou declarar uma preferência para as próximas vezes. O texto do e-mail ou do documento segue as mesmas regras de
    fidelidade acima. Para qualquer outra pergunta, responda em texto, sem ferramenta.
 
 CONTEXTO DA REUNIÃO:
@@ -96,6 +102,13 @@ TOOLS = [
                 "Conteúdo em Markdown, fiel à reunião: títulos ##, listas -, tabelas | col | col |. "
                 "Para xlsx, csv e html, ponha os dados em tabelas Markdown; no html, cada tabela com "
                 "uma coluna numérica (ex.: tarefas por responsável) vira um gráfico de barras.")},
+        }}}},
+    {"type": "function", "function": {
+        "name": "remember",
+        "description": "Guarda uma nota que o usuário pediu para lembrar nas próximas conversas, de qualquer "
+                       "reunião (preferência de formato, quem é quem, contexto do projeto).",
+        "parameters": {"type": "object", "required": ["note"], "properties": {
+            "note": {"type": "string", "description": "A nota, curta, nas palavras do usuário"},
         }}}},
 ]
 
@@ -194,6 +207,8 @@ class MeetingAgent(ILLMService):
         return {"answer": answer.strip(), "tool": tool, "attempts": s.get("attempts", 0) + 1}
 
     def _verify(self, s: ChatState) -> ChatState:
+        if (s.get("tool") or {}).get("name") == "remember":
+            return {"violations": []}  # nota do próprio usuário: não é conteúdo da reunião a conferir
         text = _tool_text(s.get("tool")) or s["answer"]
         violations = check_answer(text, s["context"], s["question"])
         if not s.get("tool") and _CLAIMS_ACTION.search(s["answer"]):

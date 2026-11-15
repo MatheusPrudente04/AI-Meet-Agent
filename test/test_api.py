@@ -104,6 +104,8 @@ class FakeContainer:
     def __init__(self, repo, queued):
         self.repository, self.queued = repo, queued
         self.documents_dir = Path(repo._base).parent / "documents"
+        from infrastructure.memory_store import JsonMemoryStore
+        self.memory = JsonMemoryStore(str(Path(repo._base).parent / "memories.json"))
 
     def enqueue_processing(self, meeting_id, audio_path, title, wait=False, owner_id=""):
         self.queued.append((meeting_id, audio_path, title))
@@ -124,7 +126,7 @@ def ctx(tmp_path, monkeypatch):
     for mod in ("api.security", "api.routers.capture", "api.routers.meetings"):
         monkeypatch.setattr(f"{mod}.get_settings", lambda: settings)
     for mod in ("api.security", "api.routers.auth", "api.routers.bot", "api.routers.capture", "api.routers.meetings",
-                "api.chat"):
+                "api.routers.memory", "api.routers.observability", "api.routers.calendar", "api.chat"):
         monkeypatch.setattr(f"{mod}.get_container", lambda: container)
     import worker.tasks
     bots = []
@@ -733,3 +735,17 @@ def test_apagar_reuniao_pela_api(with_login):
     m = repo.find_by_id("m2"); m.status = MeetingStatus.DONE; repo.save(m)
     assert c.delete("/meetings/m2", headers=ana).status_code == 204
     assert repo.find_by_id("m2") is None and c.get("/meetings/m2", headers=ana).status_code == 404
+
+
+def test_memoria_cada_um_ve_e_apaga_so_as_proprias_notas(with_login):
+    from datetime import datetime
+    c, mem = with_login.client, with_login.container.memory
+    ana, ana_user = signup(with_login)
+    bia, bia_user = signup(with_login, email="bia@empresa.com", name="Bia")
+    mem.add({"_id": "n1", "owner_id": ana_user["id"], "text": "Prefiro atas curtas", "meeting_id": "",
+             "created_at": datetime(2026, 11, 15)})
+    assert [n["text"] for n in c.get("/memory/", headers=ana).json()] == ["Prefiro atas curtas"]
+    assert c.get("/memory/", headers=bia).json() == []
+    assert c.delete("/memory/n1", headers=bia).status_code == 404
+    assert c.delete("/memory/n1", headers=ana).status_code == 204 and mem.list(ana_user["id"]) == []
+    assert c.get("/memory/", headers=AUTH).status_code == 401  # chave de serviço não tem "minhas notas"

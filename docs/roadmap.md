@@ -182,8 +182,8 @@ S7 contas/sessões ─► S8 LangGraph ─► S9 fila/N usuários ─► S10 Win
 |----|------|--------|---------------|
 | S6-1 | chore | Teste de fumaça do bot no Zoom e no Teams, corrigindo seletores a partir do `.dom.jsonl` | `run_bot --smoke` verde nas duas |
 | S6-2 | feat | Nome de quem fala no Teams e no Zoom (legendas de cada um) | Transcrição com nomes fora do Meet |
-| S6-3 | chore | E-mail de tarefas com SMTP real | E-mail recebido numa caixa de verdade |
-| S6-4 | chore | Google Calendar com a API real | Título do bot vindo de um evento da agenda |
+| S6-3 | chore | E-mail de tarefas com SMTP real | **Enviado em 2026-11-15** (tarefas e chat confirmado) para a caixa de teste do dono; falta ele confirmar o recebimento |
+| S6-4 | chore | Google Calendar com a API real | **Código pronto em 2026-11-15** (login no host, links de Meet/Zoom/Teams, lista com "Mandar"); falta o `credentials.json` do dono |
 | S6-5 | — | Movida para a Sprint 7 (S7-5), junto do resto das contas | — |
 | S6-6 | — | Discord: movido para depois da 1.0 (é outra arquitetura de captura e não bloqueia nada) | — |
 | S6-7 | chore | venv local em Python 3.11; CI verde no GitHub | Feito em 2026-11-15: `.venv` (3.11, versões travadas) com testes verdes e o OpenAPI idêntico ao do container. Falta trocar o worker do bot para ele (Playwright 1.65 baixa outro Chromium; ver CHANGELOG) |
@@ -215,7 +215,7 @@ limpa as sessões vencidas sem afetar ninguém logado.
 
 **Implementada em 2026-11-15.** Avaliação de 3/8 (antes) para 8/8 (depois), em duas rodadas; números na ADR-014.
 O contrato ficou em `SPEC_CONTRACT.md`, na raiz, onde o dono o colocou (não em `docs/agent/`).
-Pendente para depois: memória entre reuniões do mesmo usuário (§14 do contrato).
+Memória entre reuniões (§14) entregue em 2026-11-15: ADR-020.
 
 Objetivo: o chat e o resumo viram um grafo explícito (LangGraph) que aplica o contrato do agente
 em cada resposta, sem perder o que a ADR-010 resolveu para reuniões longas.

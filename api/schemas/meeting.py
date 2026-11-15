@@ -29,9 +29,10 @@ class SummarySchema(BaseModel):
 
 class ChatActionSchema(BaseModel):
     """Ação que o agente preparou no chat. E-mail: `pending` até POST .../send ou .../cancel.
-    Documento: `created`, baixar em GET .../document."""
+    Documento: `created`, baixar em GET .../document. Memória: nota guardada (`title` = a nota),
+    ver e apagar em /memory."""
     id: str
-    type: Literal["email", "document"]
+    type: Literal["email", "document", "memory"]
     status: Literal["pending", "sent", "canceled", "created"]
     to: list[str] = []
     subject: str = ""

@@ -200,18 +200,36 @@ def test_com_trava_dois_envios_simultaneos_viram_um_bot_e_um_seguidor(repo, monk
 
 def test_health_aponta_etapa_sem_worker(monkeypatch):
     import api.main as main
-    import worker.tasks as tasks
-
-    class Inspect:
-        def __init__(self, replies): self.replies = replies
-        def active_queues(self): return self.replies
-
-    replies = {"transcribe@h": [{"name": "transcribe"}]}
-    monkeypatch.setattr(tasks.celery_app.control, "inspect", lambda timeout: Inspect(replies))
+    import infrastructure.observability as obs
+    # Worker ocupado (no meio de uma transcrição) continua vivo: o batimento é de outra thread.
+    busy = {"transcribe": [{"host": "w1", "task": {"name": "process_meeting", "meeting_id": "m1"}}]}
+    monkeypatch.setattr(obs, "workers", lambda: busy)
     assert main._workers() == {"worker_transcribe": "ok", "worker_llm": "sem worker", "bot": "sem worker"}
-    replies = None  # nenhum worker respondeu
-    monkeypatch.setattr(tasks.celery_app.control, "inspect", lambda timeout: Inspect(replies))
+    monkeypatch.setattr(obs, "workers", lambda: {})
     assert set(main._workers().values()) == {"sem worker"}
+    monkeypatch.setattr(obs, "workers", lambda: None)  # Redis fora
+    assert main._workers() == {"workers": "erro: sem leitura do Redis"}
+
+
+def test_batimento_expira_e_traz_a_tarefa_atual(monkeypatch):
+    import infrastructure.observability as obs
+
+    class R:
+        def __init__(self): self.kv = {}
+        def pipeline(self):
+            r = self
+            class P:
+                def set(self, k, v, ex): r.kv[k] = (v, ex); return self
+                def execute(self): return []
+            return P()
+        def scan_iter(self, match, count): return [k.encode() for k in self.kv if k.startswith(match.rstrip("*"))]
+        def get(self, k): return self.kv[k.decode()][0].encode()
+
+    r = R()
+    monkeypatch.setattr(obs, "_client", lambda: r)
+    obs.heartbeat(["transcribe"], "w1", {"name": "process_meeting", "meeting_id": "m1"})
+    assert all(ex == obs.HEARTBEAT_TTL for _, ex in r.kv.values())  # some sozinho se o worker morrer
+    assert obs.workers()["transcribe"][0]["task"]["meeting_id"] == "m1"
 
 
 def test_alerta_so_na_mudanca_de_estado(tmp_path, monkeypatch):

@@ -37,6 +37,9 @@ class MongoMeetingRepository(IMeetingRepository):
         query = {} if owner_id is None else {"owner_id": owner_id or {"$in": ["", None]}}
         return [meeting_from_dict(d) for d in self._col.find(query).sort("started_at", -1)]
 
+    def count_by_status(self) -> dict[str, int]:
+        return {d["_id"] or "pending": d["n"] for d in self._col.aggregate([{"$group": {"_id": "$status", "n": {"$sum": 1}}}])}
+
     def find_by(self, **fields) -> list[Meeting]:
         return [meeting_from_dict(d) for d in self._col.find(fields)]
 

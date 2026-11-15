@@ -19,12 +19,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import streamlit as st
 import streamlit.components.v1 as components
 from config.settings import get_settings
+from config.logging_setup import setup_logging
 from presentation.container import BotNotReady, MeetingInProgress, get_container
 from domain.entities.meeting import Meeting, MeetingStatus, Summary
 from use_cases.process_meeting import ProcessMeetingInput
 from use_cases.chat_with_meeting import ChatWithMeetingInput
 
 settings = get_settings()
+setup_logging(service="streamlit")
 AUDIO_DIR = Path(settings.audio_storage_path)
 
 @st.cache_resource
@@ -251,6 +253,9 @@ def bot_credential_panel() -> bool:
 def render_chat_action(meeting, action: dict) -> None:
     """E-mail preparado pelo agente (confirmar ou descartar) ou documento gerado (baixar)."""
     key = action["id"]
+    if action["type"] == "memory":
+        st.caption("🧠 Guardado na sua memória (Minha conta → Memória do agente)")
+        return
     if action["type"] == "document":
         try:
             path, _ = container.document_file(meeting, key)
@@ -374,6 +379,10 @@ with st.sidebar:
             st.rerun()
     st.divider()
 
+    if settings.is_collab and st.session_state.user and st.session_state.user.is_admin:
+        _PAGES["📈 Observabilidade"] = "observability"
+    if st.session_state.page not in _PAGES.values():
+        st.session_state.page = "meetings"
     page_label = st.radio(
         "Navegação",
         options=list(_PAGES.keys()),
@@ -487,6 +496,29 @@ if st.session_state.page == "meetings":
                         st.rerun()
 
             with col_status:
+                if settings.enable_calendar:
+                    st.markdown("### 📅 Próximas reuniões da agenda")
+                    events, cal_error = container.upcoming_events()
+                    if cal_error:
+                        st.warning(cal_error)
+                    elif not events:
+                        st.caption("Nenhuma reunião com link (Meet, Zoom ou Teams) nas próximas da agenda.")
+                    for ev in events:
+                        col_ev, col_go = st.columns([3, 1])
+                        col_ev.markdown(f"**{ev.title}**  \n{ev.start:%d/%m %H:%M}")
+                        if col_go.button("🤖 Mandar", key=f"cal_{ev.id}", disabled=not bot_ready,
+                                         use_container_width=True):
+                            try:
+                                new_id = container.dispatch_bot(ev.meet_url, ev.title, owner_id=OWNER or "")
+                            except MeetingInProgress as e:
+                                select_meeting(container.meeting_for(e.meeting_id, OWNER))
+                            except (BotNotReady, ValueError) as e:
+                                st.error(str(e))
+                                st.stop()
+                            else:
+                                select_meeting(container.meeting_for(new_id, OWNER))
+                            st.rerun()
+                    st.divider()
                 st.markdown("### 📋 Como funciona")
                 st.markdown("""
                 1. Cole o link do Google Meet
@@ -678,12 +710,95 @@ elif st.session_state.page == "chat":
         if result is not None and result.action:
             st.rerun()  # redesenha pela conversa guardada, já com os botões da ação
 
+elif st.session_state.page == "observability":
+    from api.routers import observability as obs_api
+    from api.security import Principal
+    from infrastructure import observability as obs
+
+    st.title("📈 Observabilidade")
+    st.caption("Métricas e logs de todos os serviços (API, workers, bot, interface), guardados no Redis.")
+    if st.button("🔄 Atualizar"):
+        st.rerun()
+    data = obs_api.summary(Principal())
+
+    w = data["workers"]
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Transcrição", "🟢 no ar" if w.get("worker_transcribe") == "ok" else "🔴 sem worker",
+              f"{data['queues'].get('transcribe', 0)} na fila", delta_color="off")
+    c2.metric("Resumo (LLM)", "🟢 no ar" if w.get("worker_llm") == "ok" else "🔴 sem worker",
+              f"{data['queues'].get('llm', 0)} na fila", delta_color="off")
+    c3.metric("Bot", "🟢 " + data["bot"]["status"] if w.get("bot") == "ok" else "🔴 sem worker",
+              f"{data['queues'].get('bot', 0)} na fila", delta_color="off")
+    c4.metric("LLM", data["llm"].get("status", "?"), data["llm"].get("model", ""), delta_color="off")
+    c5.metric("Disco livre", f"{data['disk']['free_gb']} GB", f"{data['disk']['used_pct']}% usado", delta_color="off")
+
+    c1, c2, c3, c4 = st.columns(4)
+    by_status = data["meetings_by_status"]
+    c1.metric("Reuniões", sum(by_status.values()), f"{by_status.get('error', 0)} com erro", delta_color="off")
+    c2.metric("Usuários", data["accounts"].get("users", "—"),
+              f"{data['accounts'].get('active_sessions', 0)} sessões abertas", delta_color="off")
+    http = data["http"]
+    c3.metric("Pedidos à API", int(sum(http.values())), f"{int(http.get('5xx', 0))} erros 5xx", delta_color="off")
+    emails = data["emails"]
+    c4.metric("E-mails", int(sum(emails.values())),
+              f"{int(sum(data['email_errors'].values()))} falharam", delta_color="off")
+
+    st.subheader("Tempos (últimas amostras)")
+    names = {"pipeline_stage_seconds": "Etapa", "llm_seconds": "LLM", "http_request_seconds": "API",
+             "meeting_audio_minutes": "Áudio (min)"}
+    rows = []
+    for key, v in sorted(data["latencies_seconds"].items()):
+        name, labels = obs.parse_key(key)
+        if name == "http_request_seconds" and v["count"] < 5:
+            continue  # rota quase sem uso: ruído
+        rows.append({"Medida": names.get(name, name), "Detalhe": ", ".join(f"{k}={x}" for k, x in labels.items()),
+                     "Amostras": v["count"], "p50 (s)": v["p50"], "p95 (s)": v["p95"], "Máx (s)": v["max"]})
+    st.dataframe(rows, hide_index=True, use_container_width=True) if rows else st.caption("Sem amostras ainda.")
+
+    col_a, col_b, col_c = st.columns(3)
+    col_a.markdown("**Pipeline**")
+    col_a.json(data["pipeline_by_stage"], expanded=False)
+    col_b.markdown("**Documentos gerados**")
+    col_b.json(data["documents"], expanded=False)
+    col_c.markdown("**Bot (gravações)**")
+    col_c.json(data["bot_meetings"], expanded=False)
+
+    st.subheader("Logs")
+    f1, f2, f3, f4 = st.columns([2, 2, 1, 2])
+    meeting_filter = f1.text_input("Reunião (id)")
+    service_filter = f2.selectbox("Serviço", ["", "api", "worker-transcribe", "worker-llm", "bot", "streamlit"])
+    level_filter = f3.selectbox("Nível mínimo", ["", "INFO", "WARNING", "ERROR"])
+    text_filter = f4.text_input("Texto")
+    entries = obs.logs(limit=300, meeting_id=meeting_filter.strip(), service=service_filter, level=level_filter,
+                       text=text_filter)
+    if entries:
+        st.dataframe([{"Hora": datetime.fromtimestamp(float(e["ts"])).strftime("%d/%m %H:%M:%S"),
+                       "Serviço": e["service"], "Nível": e["level"], "Reunião": e["meeting_id"][:8],
+                       "Mensagem": e["message"][:300]} for e in entries],
+                     hide_index=True, use_container_width=True, height=420)
+    else:
+        st.caption("Nenhuma linha com esses filtros.")
+
 elif st.session_state.page == "account":
     from datetime import datetime as _dt
     from use_cases.auth import MIN_PASSWORD, AuthError, session_id
     user = st.session_state.user
     st.title("👤 Minha conta")
     st.caption(f"{user.name} · {user.email}" + (" · administrador" if user.is_admin else ""))
+
+    st.subheader("🧠 Memória do agente")
+    st.caption("O que você pediu para o agente lembrar no chat. Vale em todas as suas reuniões. "
+               "Além disso, ele consulta as decisões e tarefas abertas das suas outras reuniões.")
+    notes = container.memory.list(user.id)
+    if not notes:
+        st.caption("Nenhuma nota. No chat, peça por exemplo: \"lembre que prefiro atas em tópicos\".")
+    for n in notes:
+        col_note, col_del = st.columns([5, 1])
+        col_note.write(f"{n['text']}  \n*{n['created_at']:%d/%m/%Y %H:%M}*")
+        if col_del.button("Apagar", key=f"note_{n['_id']}", use_container_width=True):
+            container.memory.delete(user.id, n["_id"])
+            st.rerun()
+    st.divider()
 
     st.subheader("Sessões abertas")
     st.caption("Cada navegador ou aparelho em que você entrou. Encerrar uma sessão pede login de novo nela.")

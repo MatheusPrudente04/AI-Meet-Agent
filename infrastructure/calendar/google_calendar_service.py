@@ -21,8 +21,8 @@ Variáveis de ambiente:
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
+import re
 from pathlib import Path
-from urllib.parse import urlparse
 from typing import Optional
 
 from domain.entities.calendar_event import CalendarEvent
@@ -39,11 +39,15 @@ class GoogleCalendarService(ICalendarService):
 
     def __init__(
         self,
-        credentials_path: str = "credentials.json",
-        token_path: str = "token.json",
+        credentials_path: str = "data/google/credentials.json",
+        token_path: str = "data/google/token.json",
+        interactive: bool = False,
     ) -> None:
         self._credentials_path = credentials_path
         self._token_path = token_path
+        # Só o comando de login (calendar_setup, no host) abre o navegador. Num container, sem
+        # token, o fluxo ficaria esperando um navegador que não existe: erro claro em vez disso.
+        self._interactive = interactive
         self._service = None  # lazy
 
     def get_current_event(self) -> Optional[CalendarEvent]:
@@ -62,7 +66,7 @@ class GoogleCalendarService(ICalendarService):
         return meet_events[0] if meet_events else None
 
     def get_upcoming_events(self, limit: int = 5) -> list[CalendarEvent]:
-        """Retorna próximos eventos com link do Meet."""
+        """Próximos eventos com link de reunião (Meet, Zoom ou Teams)."""
         now = datetime.now(timezone.utc).isoformat()
         events = self._fetch_events(
             time_min=now,
@@ -71,10 +75,10 @@ class GoogleCalendarService(ICalendarService):
         return [e for e in events if e.meet_url][:limit]
 
     def find_by_meet_url(self, meet_url: str) -> Optional[CalendarEvent]:
-        """Encontra evento pelo código da sala do Meet."""
-        # Extrai o código da URL de forma segura, ignorando query strings
-        parsed = urlparse(meet_url)
-        code = parsed.path.rstrip("/").split("/")[-1]
+        """Evento cujo link é a mesma reunião (mesma normalização do bot: maiúsculas, parâmetros)."""
+        key = _key(meet_url)
+        if not key:
+            return None
 
         now = datetime.now(timezone.utc)
         window_start = (now - timedelta(hours=2)).isoformat()
@@ -87,7 +91,7 @@ class GoogleCalendarService(ICalendarService):
         )
 
         for event in events:
-            if event.meet_url and code in event.meet_url:
+            if event.meet_url and _key(event.meet_url) == key:
                 return event
         return None
 
@@ -124,13 +128,18 @@ class GoogleCalendarService(ICalendarService):
                         f"credentials.json não encontrado em '{self._credentials_path}'.\n"
                         "Baixe de: console.cloud.google.com → APIs → Credenciais"
                     )
+                if not self._interactive:
+                    raise CalendarServiceError(
+                        "A agenda ainda não foi autorizada. No computador, uma vez: "
+                        "python -m infrastructure.calendar.calendar_setup"
+                    )
                 flow = InstalledAppFlow.from_client_secrets_file(
                     self._credentials_path, SCOPES
                 )
                 creds = flow.run_local_server(port=0)
 
-            with open(token_path, "w") as f:
-                f.write(creds.to_json())
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            token_path.write_text(creds.to_json(), encoding="utf-8")
 
         self._service = build("calendar", "v3", credentials=creds)
         return self._service
@@ -181,12 +190,7 @@ class GoogleCalendarService(ICalendarService):
             if not a.get("self", False)
         ]
 
-        meet_url = ""
-        entry_points = item.get("conferenceData", {}).get("entryPoints", [])
-        for ep in entry_points:
-            if ep.get("entryPointType") == "video":
-                meet_url = ep.get("uri", "")
-                break
+        meet_url = _meeting_link(item)
 
         return CalendarEvent(
             id=item.get("id", ""),
@@ -209,3 +213,28 @@ class GoogleCalendarService(ICalendarService):
             return d.replace(tzinfo=timezone.utc)
         except ValueError:
             return datetime.now(timezone.utc)
+
+_URL = re.compile(r"https://[^\s<>\"')]+")
+
+
+def _key(url: str) -> str:
+    from infrastructure.recorder.platforms import UnsupportedMeetingUrl, meeting_key
+    try:
+        return meeting_key(url)
+    except (UnsupportedMeetingUrl, ValueError):
+        return ""
+
+
+def _meeting_link(item: dict) -> str:
+    """Link da reunião do evento: a videochamada do Google (Meet) e, senão, o primeiro link de
+    Zoom ou Teams no local ou na descrição (é onde esses convites colocam o link)."""
+    for ep in item.get("conferenceData", {}).get("entryPoints", []):
+        if ep.get("entryPointType") == "video" and _key(ep.get("uri", "")):
+            return ep["uri"]
+    if _key(item.get("hangoutLink", "")):
+        return item["hangoutLink"]
+    for text in (item.get("location", ""), item.get("description", "")):
+        for url in _URL.findall(text or ""):
+            if _key(url):
+                return url
+    return ""

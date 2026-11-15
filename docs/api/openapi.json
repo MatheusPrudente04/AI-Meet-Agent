@@ -48,6 +48,50 @@
         "title": "BotStatusResponse",
         "type": "object"
       },
+      "CalendarEventSchema": {
+        "properties": {
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "meeting_url": {
+            "description": "Meet, Zoom ou Teams; mandar para POST /meetings/bot",
+            "title": "Meeting Url",
+            "type": "string"
+          },
+          "participants": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Participants",
+            "type": "array"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "start",
+          "end",
+          "meeting_url"
+        ],
+        "title": "CalendarEventSchema",
+        "type": "object"
+      },
       "ChangePasswordRequest": {
         "properties": {
           "current_password": {
@@ -70,7 +114,7 @@
         "type": "object"
       },
       "ChatActionSchema": {
-        "description": "Ação que o agente preparou no chat. E-mail: `pending` até POST .../send ou .../cancel.\nDocumento: `created`, baixar em GET .../document.",
+        "description": "Ação que o agente preparou no chat. E-mail: `pending` até POST .../send ou .../cancel.\nDocumento: `created`, baixar em GET .../document. Memória: nota guardada (`title` = a nota),\nver e apagar em /memory.",
         "properties": {
           "body": {
             "default": "",
@@ -128,7 +172,8 @@
           "type": {
             "enum": [
               "email",
-              "document"
+              "document",
+              "memory"
             ],
             "title": "Type",
             "type": "string"
@@ -578,6 +623,35 @@
           "started_at"
         ],
         "title": "MeetingStatusResponse",
+        "type": "object"
+      },
+      "MemoryNote": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "meeting_id": {
+            "default": "",
+            "title": "Meeting Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "text",
+          "created_at"
+        ],
+        "title": "MemoryNote",
         "type": "object"
       },
       "PlatformSchema": {
@@ -1533,6 +1607,65 @@
         "summary": "O bot está credenciado?",
         "tags": [
           "bot"
+        ]
+      }
+    },
+    "/calendar/events": {
+      "get": {
+        "description": "Só eventos com link de reunião. A agenda é uma só por instalação (a conta autorizada no\ncalendar_setup), não uma por usuário.",
+        "operationId": "upcoming_calendar_events_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 8,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CalendarEventSchema"
+                  },
+                  "title": "Response Upcoming Calendar Events Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "Agenda desligada (ENABLE_CALENDAR) ou não autorizada"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Próximas reuniões da agenda",
+        "tags": [
+          "agenda"
         ]
       }
     },
@@ -2599,6 +2732,291 @@
           "meetings"
         ]
       }
+    },
+    "/memory/": {
+      "get": {
+        "description": "Criadas no chat (\"lembre que prefiro atas em tópicos\"). Valem em todas as reuniões do usuário.",
+        "operationId": "list_notes_memory__get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MemoryNote"
+                  },
+                  "title": "Response List Notes Memory  Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Notas que o agente guardou para mim",
+        "tags": [
+          "memória"
+        ]
+      }
+    },
+    "/memory/{note_id}": {
+      "delete": {
+        "operationId": "delete_note_memory__note_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "note_id",
+            "required": true,
+            "schema": {
+              "title": "Note Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Nota não existe ou é de outro usuário"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Apaga uma nota",
+        "tags": [
+          "memória"
+        ]
+      }
+    },
+    "/observability/logs": {
+      "get": {
+        "description": "Mais recentes primeiro, entre as últimas 5.000 linhas (o stream guarda 50.000).",
+        "operationId": "logs_observability_logs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "meeting_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Meeting Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "api, worker-transcribe, worker-llm, bot, streamlit",
+            "in": "query",
+            "name": "service",
+            "required": false,
+            "schema": {
+              "default": "",
+              "description": "api, worker-transcribe, worker-llm, bot, streamlit",
+              "title": "Service",
+              "type": "string"
+            }
+          },
+          {
+            "description": "nível mínimo: INFO, WARNING, ERROR",
+            "in": "query",
+            "name": "level",
+            "required": false,
+            "schema": {
+              "default": "",
+              "description": "nível mínimo: INFO, WARNING, ERROR",
+              "title": "Level",
+              "type": "string"
+            }
+          },
+          {
+            "description": "texto contido na mensagem",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "default": "",
+              "description": "texto contido na mensagem",
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 2000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Logs de todos os serviços",
+        "tags": [
+          "observabilidade"
+        ]
+      }
+    },
+    "/observability/meetings/{meeting_id}": {
+      "get": {
+        "description": "Status, erro, medições do processamento, fila e os logs da reunião em todos os serviços,\ndo mais antigo ao mais novo. É por onde começar quando uma reunião deu errado.",
+        "operationId": "meeting_timeline_observability_meetings__meeting_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "meeting_id",
+            "required": true,
+            "schema": {
+              "title": "Meeting Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Linha do tempo de uma reunião",
+        "tags": [
+          "observabilidade"
+        ]
+      }
+    },
+    "/observability/metrics": {
+      "get": {
+        "description": "Para o Prometheus raspar (com o cabeçalho X-API-Key). Contadores, resumos de duração\n(quantis 0.5/0.95 das últimas amostras) e medidores: filas, reuniões por status, workers.",
+        "operationId": "metrics_observability_metrics_get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Métricas no formato Prometheus",
+        "tags": [
+          "observabilidade"
+        ]
+      }
+    },
+    "/observability/summary": {
+      "get": {
+        "description": "Saúde das dependências, filas, workers, reuniões, usuários, bot, LLM, latências (p50/p95\ndas últimas amostras), erros, e-mails e documentos. Pensado para um painel.",
+        "operationId": "summary_observability_summary_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Estado do sistema num só lugar",
+        "tags": [
+          "observabilidade"
+        ]
+      }
     }
   },
   "tags": [
@@ -2621,6 +3039,18 @@
     {
       "description": "Configuração para o front e verificação de saúde. Sem autenticação.",
       "name": "sistema"
+    },
+    {
+      "description": "Próximas reuniões do Google Calendar (ENABLE_CALENDAR), com o link para mandar o bot.",
+      "name": "agenda"
+    },
+    {
+      "description": "Notas que o usuário pediu para o agente lembrar entre reuniões (§14 do contrato).",
+      "name": "memória"
+    },
+    {
+      "description": "Métricas (JSON e Prometheus), logs centralizados de todos os serviços e linha do tempo por reunião. Só administrador.",
+      "name": "observabilidade"
     },
     {
       "description": "Credenciamento da conta do Google do bot: o envio do bot só é liberado com status ready.",

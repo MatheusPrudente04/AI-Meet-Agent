@@ -60,8 +60,10 @@ class Settings(BaseSettings):
     diarization_device: str = "cpu"
 
     # ── Google Calendar ───────────────────────────────────────────────
-    google_credentials_path: str = "credentials.json"
-    google_token_path: str = "token.json"
+    # Em data/google (fora do git e montado nos containers). Login uma vez, no computador:
+    # python -m infrastructure.calendar.calendar_setup
+    google_credentials_path: str = "data/google/credentials.json"
+    google_token_path: str = "data/google/token.json"
     enable_calendar: bool = False
 
     # ── Provider LLM ─────────────────────────────────────────────────

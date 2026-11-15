@@ -109,9 +109,16 @@ class Container:
         self.summarize_meeting = SummarizeMeetingUC(llm, max_context_chars=settings.llm_context_chars)
         from infrastructure.exporters.document_writer import write_document
         self.documents_dir = Path(settings.documents_path)
+        if settings.is_collab:
+            from infrastructure.memory_store import MongoMemoryStore
+            self.memory = MongoMemoryStore(settings.mongo_uri, settings.mongo_db)
+        else:
+            from infrastructure.memory_store import JsonMemoryStore
+            self.memory = JsonMemoryStore(str(Path(settings.storage_path).parent / "memories.json"))
         self.chat_with_meeting = ChatWithMeetingUC(
             llm, repository=self.repository, max_context_chars=settings.llm_context_chars,
-            documents_dir=self.documents_dir, write_document=write_document,
+            documents_dir=self.documents_dir, write_document=_counted_write_document(write_document),
+            memory_store=self.memory,
         )
         from infrastructure.recorder.speaker_events import load_speaker_events
         self.process_meeting = ProcessMeetingUC(
@@ -300,6 +307,16 @@ class Container:
         self.repository.save(meeting)
         return meeting
 
+    def upcoming_events(self, limit: int = 8) -> tuple[list, str]:
+        """(próximas reuniões da agenda com link, erro). Agenda desligada: ([], "")."""
+        if self.calendar is None:
+            return [], ""
+        try:
+            return self.calendar.get_upcoming_events(limit=limit), ""
+        except Exception as exc:  # agenda é um extra: mostra o motivo, não derruba a tela
+            logger.warning("Agenda indisponível: %s", exc)
+            return [], str(exc)
+
     def _title_from_calendar(self, meeting_url: str) -> str:
         if self.calendar is None:
             return ""
@@ -383,6 +400,15 @@ class Container:
                 "--url", meeting_url, "--title", title, "--meeting-id", meeting_id,
             ])
         return meeting_id
+
+
+def _counted_write_document(write):
+    def wrapper(path, fmt, *args, **kwargs):
+        from infrastructure import observability as obs
+        result = write(path, fmt, *args, **kwargs)
+        obs.incr("documents_total", {"format": fmt})
+        return result
+    return wrapper
 
 
 @lru_cache(maxsize=1)

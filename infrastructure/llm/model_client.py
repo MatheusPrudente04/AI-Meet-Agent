@@ -13,6 +13,7 @@ import requests
 
 from config.settings import get_settings
 from domain.interfaces.llm_service import LLMServiceError
+from infrastructure.observability import timed
 
 NUM_PREDICT = 2000
 _CTX_STEPS = (4096, 8192, 16384, 32768, 65536, 131072)
@@ -25,10 +26,12 @@ class ModelClient:
         provider = self._s.llm_provider
         # OpenAI sem chave cai no Ollama local, como antes.
         self.ollama = provider == "ollama" or (provider == "openai" and not self._s.openai_api_key.strip())
+        self._provider = "ollama" if self.ollama else provider
 
     def complete(self, messages: list[dict], as_json: bool = False) -> str:
         try:
-            return self._ollama(messages, as_json) if self.ollama else self._compatible(messages, as_json)
+            with timed("llm_seconds", {"kind": "json" if as_json else "text", "provider": self._provider}):
+                return self._ollama(messages, as_json) if self.ollama else self._compatible(messages, as_json)
         except LLMServiceError:
             raise
         except Exception as exc:
@@ -37,6 +40,10 @@ class ModelClient:
     def complete_tools(self, messages: list[dict], tools: list[dict]) -> tuple[str, Optional[dict]]:
         """Resposta em texto ou o pedido de UMA ferramenta: (texto, {"name", "arguments"} | None).
         `tools` no formato de função da OpenAI, que o Ollama também aceita."""
+        with timed("llm_seconds", {"kind": "tools", "provider": self._provider}):
+            return self._complete_tools(messages, tools)
+
+    def _complete_tools(self, messages: list[dict], tools: list[dict]) -> tuple[str, Optional[dict]]:
         try:
             if self.ollama:
                 message = self._ollama_message(messages, as_json=False, tools=tools)

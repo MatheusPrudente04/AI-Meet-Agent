@@ -7,6 +7,7 @@ from typing import Callable, Optional
 from domain.entities.meeting import Meeting, Task
 from domain.interfaces.llm_service import ChatReply, ILLMService, LLMServiceError
 from use_cases.llm_context import select_relevant
+from use_cases.meeting_memory import build_memory, new_note
 
 _EMAIL = re.compile(r"[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+")
 DOCUMENT_FORMATS = ("pdf", "docx", "xlsx", "csv", "html", "md")
@@ -47,7 +48,8 @@ class ChatWithMeetingUC:
 
     def __init__(self, llm_service: ILLMService, repository=None, max_context_chars: int = 30000,
                  documents_dir: Optional[Path] = None,
-                 write_document: Optional[Callable[..., Path]] = None) -> None:
+                 write_document: Optional[Callable[..., Path]] = None, memory_store=None) -> None:
+        self._memory = memory_store  # notas do remember; sem ele, sem memória entre reuniões
         self._llm = llm_service
         self._repo = repository
         self._max_chars = max_context_chars
@@ -133,9 +135,36 @@ class ChatWithMeetingUC:
                       "title": title, "filename": f"{slug}.{fmt}"}
             return f"Gerei o documento {title} ({fmt.upper()}). Baixe pelo botão abaixo.", action
 
+        if tool.get("name") == "remember":
+            if self._memory is None:
+                return "A memória entre reuniões não está disponível neste ambiente.", None
+            note = new_note(meeting.owner_id, str(args.get("note") or ""), meeting.id)
+            if note is None:
+                return "Não entendi o que devo lembrar. Pode repetir?", None
+            self._memory.add(note)
+            return (f"Anotado: {note['text']} Vou levar isso em conta nas suas próximas conversas, em "
+                    "qualquer reunião. Você pode ver e apagar as notas em Minha conta."), \
+                {"id": note["_id"], "type": "memory", "status": "created", "title": note["text"]}
+
         return "Não sei executar essa ação.", None
 
     def _context(self, meeting: Meeting, question: str) -> str:
+        # A reunião aberta diz o próprio título e data: sem isso, com registros de outras reuniões
+        # no contexto, o modelo trocou "esta reunião" pela anterior (teste de 2026-11-15).
+        opened = (f"REUNIÃO ABERTA (é sobre esta que o usuário pergunta): \"{meeting.title}\", "
+                  f"{meeting.started_at:%d/%m/%Y}\n\n")
+        memory = self._memory_block(meeting, question)
+        return memory + opened + self._meeting_context(meeting, question) if memory else \
+            self._meeting_context(meeting, question)
+
+    def _memory_block(self, meeting: Meeting, question: str) -> str:
+        """§14: registros das outras reuniões do mesmo dono e as notas dele."""
+        if self._memory is None or self._repo is None:
+            return ""
+        others = [m for m in self._repo.list_all(meeting.owner_id) if m.id != meeting.id]
+        return build_memory(meeting, others, self._memory.list(meeting.owner_id), question)
+
+    def _meeting_context(self, meeting: Meeting, question: str) -> str:
         full = meeting.transcript_for_llm
         if len(full) <= self._max_chars:
             return _stats_block(meeting) + _decisions_block(meeting) + full
@@ -216,5 +245,5 @@ def _for_llm(message: dict) -> dict:
     action = message.get("action")
     if message["role"] != "assistant" or not action:
         return {"role": message["role"], "content": message["content"]}
-    tool = "create_document" if action["type"] == "document" else "send_email"
+    tool = {"document": "create_document", "email": "send_email", "memory": "remember"}.get(action["type"], "?")
     return {"role": "assistant", "content": f"[O sistema executou a ferramenta {tool} para o pedido acima.]"}

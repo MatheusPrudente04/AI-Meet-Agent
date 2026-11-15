@@ -4,7 +4,7 @@ import os
 
 from celery import Celery
 from celery.signals import setup_logging as celery_setup_logging
-from celery.signals import worker_ready
+from celery.signals import task_postrun, task_prerun, worker_ready
 
 from config.logging_setup import bind_meeting, setup_logging
 from config.settings import get_settings
@@ -64,6 +64,8 @@ def join_meeting_task(meeting_id: str, meeting_url: str, title: str) -> dict:
                                             meeting_id, current.status.value)
         return {"meeting_id": meeting_id, "status": current.status.value, "error": current.error}
     meeting = run_bot_job(meeting_id, meeting_url, title)
+    from infrastructure import observability as obs
+    obs.incr("bot_meetings_total", {"result": "error" if meeting.status is MeetingStatus.ERROR else "recorded"})
     return {"meeting_id": meeting.id, "status": meeting.status.value, "error": meeting.error}
 
 
@@ -79,6 +81,7 @@ def process_meeting_task(meeting_id: str, audio_path: str, title: str) -> dict:
     bind_meeting(meeting_id)
     container = get_container()
     meeting = container.process_meeting.transcribe(ProcessMeetingInput(meeting_id, audio_path, title))
+    _record_stage("transcribe", meeting, "transcribe_s")
     if meeting.status is not MeetingStatus.ERROR:
         container.enqueue(meeting, "llm")
     return {"meeting_id": meeting.id, "status": meeting.status.value, "error": meeting.error}
@@ -91,6 +94,7 @@ def summarize_meeting_task(meeting_id: str) -> dict:
 
     bind_meeting(meeting_id)
     meeting = get_container().process_meeting.summarize(meeting_id)
+    _record_stage("summarize", meeting, "summarize_s")
     return {"meeting_id": meeting.id, "status": meeting.status.value, "error": meeting.error}
 
 
@@ -113,3 +117,52 @@ def _check_bot_account(**_):
     mandar o bot (o perfil pode ter sido logado à mão ou ter perdido a sessão)."""
     if os.environ.get("MEET_AGENT_BOT_WORKER"):
         setup_bot_task.delay(check_only=True)
+
+
+# ── Batimento (observabilidade): vivo mesmo ocupado ──────────────────
+_current: dict = {}
+
+
+@worker_ready.connect
+def _start_heartbeat(sender=None, **_):
+    import socket
+    import threading
+    import time as _time
+    from infrastructure import observability as obs
+
+    queues = [q for q in os.environ.get("WORKER_QUEUES", "").split(",") if q]
+    if not queues:
+        return
+    host = getattr(sender, "hostname", None) or socket.gethostname()
+
+    def beat():
+        while True:
+            obs.heartbeat(queues, host, dict(_current) or None)
+            _time.sleep(obs.HEARTBEAT_S)
+
+    threading.Thread(target=beat, name="heartbeat", daemon=True).start()
+
+
+@task_prerun.connect
+def _task_started(task=None, args=None, **_):
+    import time as _time
+    _current.clear()
+    _current.update(name=getattr(task, "name", "?"), meeting_id=(args or [""])[0] if args else "",
+                    since=_time.time())
+
+
+@task_postrun.connect
+def _task_finished(**_):
+    _current.clear()
+
+
+def _record_stage(stage: str, meeting, metric_key: str) -> None:
+    """Duração e resultado de uma etapa do pipeline (observabilidade)."""
+    from domain.entities.meeting import MeetingStatus
+    from infrastructure import observability as obs
+    failed = meeting.status is MeetingStatus.ERROR
+    obs.incr("pipeline_stage_total", {"stage": stage, "result": "error" if failed else "ok"})
+    if not failed and meeting.metrics.get(metric_key) is not None:
+        obs.observe("pipeline_stage_seconds", float(meeting.metrics[metric_key]), {"stage": stage})
+        if stage == "transcribe" and meeting.duration_minutes:
+            obs.observe("meeting_audio_minutes", float(meeting.duration_minutes))

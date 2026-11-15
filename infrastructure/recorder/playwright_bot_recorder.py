@@ -138,7 +138,7 @@ class BotSession:
 
 
 class PlaywrightBotRecorder:
-    ALONE_TIMEOUT = 80.0              # sozinho na reunião por mais que isso: sai
+    ALONE_TIMEOUT = 50.0              # sozinho na reunião por mais que isso: sai
     UNKNOWN_COUNT_TIMEOUT = 600.0     # contagem de participantes ilegível por mais que isso: sai
     SILENCE_TIMEOUT = 300.0
     END_POLL_INTERVAL = 5.0

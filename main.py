@@ -32,6 +32,7 @@ def run_streamlit() -> None:
 def run_api() -> None:
     """Sobe a FastAPI via uvicorn."""
     from config.settings import get_settings
+    os.environ.setdefault("SERVICE_NAME", "api")
     subprocess.run(
         [
             sys.executable, "-m", "uvicorn",
@@ -54,6 +55,10 @@ def run_worker(bot: bool = False, queues: str = "transcribe,llm") -> None:
         "-A", "worker.tasks.celery_app",
         "worker",
         "--loglevel=info",
+        # Sem a troca de mensagens entre workers: com pool solo, worker ocupado não responde e o
+        # Celery enchia o log de "missed heartbeat"/"clocks out of sync". A saúde usa o batimento
+        # próprio (infrastructure/observability.py), não isso.
+        "--without-gossip", "--without-mingle", "--without-heartbeat",
     ]
     # pool=solo: um trabalho por processo. Paralelismo = mais processos (ADR-015): o Whisper
     # carrega o modelo uma vez e não convive bem com fork, e o navegador do bot roda no
@@ -65,7 +70,10 @@ def run_worker(bot: bool = False, queues: str = "transcribe,llm") -> None:
     else:
         cmd += ["-Q", queues, "--pool=solo", "-n", f"{queues.replace(',', '-')}@%h"]
     # O worker do bot confere a conta do Google ao subir (worker.tasks._check_bot_account).
-    env = {**os.environ, "MEET_AGENT_BOT_WORKER": "1"} if bot else None
+    env = {**os.environ, "SERVICE_NAME": "bot" if bot else f"worker-{queues.replace(',', '-')}",
+           "WORKER_QUEUES": "bot" if bot else queues}  # batimento (observabilidade)
+    if bot:
+        env["MEET_AGENT_BOT_WORKER"] = "1"
     subprocess.run(cmd, check=True, env=env)
 
 

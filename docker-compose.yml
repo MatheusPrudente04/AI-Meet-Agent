@@ -5,6 +5,8 @@
 #
 # Portas no host: API 8001, Streamlit 8501, Redis 6380, Mongo 27018
 # (fora das portas padrão para não colidir com serviços já instalados na máquina).
+# Na rede local: interface e API abertas (http://<ip-desta-máquina>:8501 de outro aparelho);
+# Mongo, Redis e o noVNC do bot só nesta máquina (127.0.0.1): não têm senha.
 
 # A imagem é construída uma vez, pelo serviço api; worker e streamlit a reutilizam.
 # Com `build` nos três, o compose exportava a mesma imagem três vezes em paralelo e
@@ -38,7 +40,7 @@ services:
     build: .
     command: python main.py --api
     ports:
-      - "8001:8000"
+      - "0.0.0.0:8001:8000"   # rede local
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 30s
@@ -62,7 +64,7 @@ services:
       streamlit run presentation/streamlit/app.py
       --server.port=8501 --server.address=0.0.0.0 --server.headless=true
     ports:
-      - "8501:8501"
+      - "0.0.0.0:8501:8501"   # rede local: http://<ip-desta-máquina>:8501
 
   # Bot em container (S10-1, ADR-016). Opcional enquanto o worker do host existir: os dois
   # consomem a fila "bot". Login da conta do bot, uma vez:
@@ -113,7 +115,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6380:6379"
+      - "127.0.0.1:6380:6379"   # só esta máquina (sem senha): o worker do bot no host usa
     volumes:
       - redis_data:/data
     restart: unless-stopped
@@ -126,7 +128,7 @@ services:
   mongo:
     image: mongo:7
     ports:
-      - "27018:27017"
+      - "127.0.0.1:27018:27017"   # só esta máquina (sem senha)
     volumes:
       - mongo_data:/data/db
     restart: unless-stopped

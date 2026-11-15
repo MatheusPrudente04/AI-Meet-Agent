@@ -101,6 +101,10 @@ class AuthService:
             raise AuthError("Já existe uma conta com este e-mail.")
         return user
 
+    def counts(self) -> dict[str, int]:
+        """Usuários cadastrados e sessões abertas (observabilidade)."""
+        return {"users": self._store.count_users(), "active_sessions": self._store.count_active_sessions()}
+
     def is_first_user(self) -> bool:
         return self._store.count_users() == 1
 

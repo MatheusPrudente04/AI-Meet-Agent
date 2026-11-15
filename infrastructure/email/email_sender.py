@@ -69,7 +69,7 @@ class EmailSender:
             meeting_link=meeting_link or "Não informado",
         )
 
-        return self._send(to_email, f"📋 Tarefa criada - {task_data.get('nome', 'Nova tarefa')}", content)
+        return self._send(to_email, f"📋 Tarefa criada - {task_data.get('nome', 'Nova tarefa')}", content, kind="task")
 
     def send_tasks_email(self, to_email: str, meeting) -> bool:
         """Envia as tarefas da reunião num único e-mail."""
@@ -84,7 +84,7 @@ class EmailSender:
             "",
             "Enviado pelo Meet Agent.",
         ]
-        return self._send(to_email, f"Tarefas — {meeting.title}", "\n".join(lines))
+        return self._send(to_email, f"Tarefas — {meeting.title}", "\n".join(lines), kind="tasks")
 
     def send_password_reset(self, to_email: str, name: str, code: str, minutes: int) -> bool:
         body = (
@@ -93,18 +93,31 @@ class EmailSender:
             f"Ele vale por {minutes} minutos e só pode ser usado uma vez.\n"
             "Se não foi você que pediu, ignore este e-mail: sua senha continua a mesma.\n"
         )
-        return self._send(to_email, "Meet Agent — código para nova senha", body)
+        return self._send(to_email, "Meet Agent — código para nova senha", body, kind="password_reset")
 
     def send_message(self, to: list[str], subject: str, body: str) -> bool:
         """E-mail livre (ferramenta send_email do chat), um envio por destinatário."""
         for address in to:
-            self._send(address, subject, body)
+            self._send(address, subject, body, kind="chat")
         return True
 
     def send_alert(self, to_email: str, subject: str, body: str) -> bool:
-        return self._send(to_email, f"Meet Agent — {subject}", body)
+        return self._send(to_email, f"Meet Agent — {subject}", body, kind="alert")
 
-    def _send(self, to_email: str, subject: str, content: str) -> bool:
+    def _send(self, to_email: str, subject: str, content: str, kind: str = "other") -> bool:
+        from infrastructure import observability as obs
+        try:
+            result = self._deliver(to_email, subject, content)
+        except Exception as exc:
+            obs.incr("emails_total", {"kind": kind, "result": "error"})
+            logger.warning("E-mail (%s) para %s falhou: %s", kind, to_email, exc)
+            raise
+        obs.incr("emails_total", {"kind": kind, "result": "sent"})
+        # Rastro de cada envio no log central (observabilidade, só admin): tipo, destino, assunto.
+        logger.info("E-mail (%s) enviado para %s: %s", kind, to_email, subject[:120])
+        return result
+
+    def _deliver(self, to_email: str, subject: str, content: str) -> bool:
         settings = self._settings
         if not settings.email_enabled:
             raise RuntimeError("SMTP não configurado. Preencha SMTP_USER e SMTP_PASSWORD no .env")
