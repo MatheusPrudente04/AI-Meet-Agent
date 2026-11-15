@@ -205,6 +205,13 @@ _ACTIVE = (MeetingStatus.PENDING, MeetingStatus.RECORDING,
            MeetingStatus.TRANSCRIBING, MeetingStatus.SUMMARIZING)
 
 
+def _progress_label(m) -> str:
+    """"Gerando o resumo — 3º na fila", quando a reunião espera um worker (ADR-015)."""
+    label = _STATUS_LABEL.get(m.status, m.status.value)
+    position = container.queue_position(m)
+    return f"{label} — {position}º na fila" if position else label
+
+
 @st.fragment(run_every="5s")
 def watch_progress(meeting_id: str, shown_status: MeetingStatus) -> None:
     """Relê o status a cada 5 s. A cada mudança recarrega a página inteira,
@@ -215,7 +222,7 @@ def watch_progress(meeting_id: str, shown_status: MeetingStatus) -> None:
     if current.status != shown_status:
         st.session_state.meeting = current
         st.rerun()
-    st.info(f"{_STATUS_ICON[current.status]} {_STATUS_LABEL.get(current.status, current.status.value)}…")
+    st.info(f"{_STATUS_ICON[current.status]} {_progress_label(current)}…")
 
 
 @st.fragment(run_every="5s")
@@ -232,7 +239,7 @@ def active_meetings_panel() -> None:
     st.markdown("### ⏱ Em andamento")
     for m in active:
         col_txt, col_btn = st.columns([4, 1])
-        col_txt.info(f"{_STATUS_ICON[m.status]} **{m.title}** — {_STATUS_LABEL[m.status]}…")
+        col_txt.info(f"{_STATUS_ICON[m.status]} **{m.title}** — {_progress_label(m)}…")
         if col_btn.button("Abrir", key=f"open_active_{m.id}", use_container_width=True):
             select_meeting(m)
             st.rerun()

@@ -5,8 +5,9 @@ Modos de uso:
   streamlit run main.py              → Interface web Streamlit
   python main.py --test <audio.wav>  → Teste via terminal (sem UI)
   python main.py --api               → Sobe FastAPI via uvicorn
-  python main.py --worker            → Sobe o worker de processamento (Celery)
-  python main.py --bot-worker        → Sobe o worker do bot (fila "bot", uma reunião por vez)
+  python main.py --worker [FILAS]    → Worker de processamento (Celery); FILAS = transcribe,llm (padrão)
+  python main.py --bot-worker        → Worker do bot (fila "bot", uma reunião por vez)
+                                       Vários bots: um processo por perfil, BOT_CHROME_PROFILE=<pasta>
 """
 
 import sys
@@ -37,25 +38,32 @@ def run_api() -> None:
             "api.main:app",
             "--host", "0.0.0.0",
             "--port", str(get_settings().api_port),
+            # Vários processos: cada um com seu pool de threads (ADR-015)
+            "--workers", str(get_settings().api_workers),
         ],
         check=True,
     )
 
 
-def run_worker(bot: bool = False) -> None:
+def run_worker(bot: bool = False, queues: str = "transcribe,llm") -> None:
     """Sobe um worker Celery: processamento (padrão) ou bot."""
+    from pathlib import Path
+    from config.settings import get_settings
     cmd = [
         sys.executable, "-m", "celery",
         "-A", "worker.tasks.celery_app",
         "worker",
         "--loglevel=info",
     ]
+    # pool=solo: um trabalho por processo. Paralelismo = mais processos (ADR-015): o Whisper
+    # carrega o modelo uma vez e não convive bem com fork, e o navegador do bot roda no
+    # processo principal.
     if bot:
-        # pool=solo: o navegador roda no processo principal, uma reunião por vez
-        cmd += ["-Q", "bot", "--pool=solo", "-n", "bot@%h"]
+        # Um perfil do Chrome por bot: o nome do nó vem da pasta do perfil
+        profile = Path(get_settings().bot_chrome_profile).resolve().name
+        cmd += ["-Q", "bot", "--pool=solo", "-n", f"bot-{profile}@%h"]
     else:
-        # solo também aqui: o Whisper carrega o modelo uma vez e não convive bem com fork
-        cmd += ["-Q", "celery", "--pool=solo", "-n", "worker@%h"]
+        cmd += ["-Q", queues, "--pool=solo", "-n", f"{queues.replace(',', '-')}@%h"]
     subprocess.run(cmd, check=True)
 
 
@@ -168,6 +176,8 @@ if __name__ == "__main__":
     elif "--bot-worker" in sys.argv:
         run_worker(bot=True)
     elif "--worker" in sys.argv:
-        run_worker()
+        idx = sys.argv.index("--worker")
+        rest = sys.argv[idx + 1:]
+        run_worker(queues=rest[0] if rest and not rest[0].startswith("-") else "transcribe,llm")
     else:
         run_streamlit()

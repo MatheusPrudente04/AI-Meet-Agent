@@ -61,4 +61,7 @@ def meeting_from_dict(data: dict) -> Meeting:
         error=data.get("error") or "",
         chat_history=data.get("chat_history") or [],
         metrics=data.get("metrics") or {},
+        queue=data.get("queue") or "",
+        queue_priority=data.get("queue_priority") or 0,
+        queued_at=_to_datetime(data["queued_at"]) if data.get("queued_at") else None,
     )

@@ -41,16 +41,36 @@ class ProcessMeetingUC:
         self._load_speaker_events = load_speaker_events
 
     def execute(self, data: ProcessMeetingInput) -> Meeting:
+        """As duas etapas em sequência (modo solo e CLI)."""
+        meeting = self.transcribe(data)
+        if meeting.status is MeetingStatus.ERROR:
+            return meeting
+        return self.summarize(meeting.id, data.meeting_type)
+
+    def transcribe(self, data: ProcessMeetingInput) -> Meeting:
+        """Etapa 1 (fila "transcribe"): termina com status summarizing, à espera do LLM."""
         meeting = self._repo.find_by_id(data.meeting_id) or Meeting(id=data.meeting_id, title=data.title)
         meeting.title = data.title or meeting.title
         meeting.audio_path = data.audio_path
+        return self._guard(meeting, self._transcribe_stage, meeting, data)
+
+    def summarize(self, meeting_id: str, meeting_type: MeetingType = MeetingType.GENERAL) -> Meeting:
+        """Etapa 2 (fila "llm"): resumo de uma reunião já transcrita."""
+        meeting = self._repo.find_by_id(meeting_id)
+        if meeting is None:
+            raise LookupError(f"Reunião {meeting_id} não existe")
+        if not meeting.is_transcribed:
+            return self._fail(meeting, "Resumo pedido antes da transcrição.")
+        return self._guard(meeting, self._summarize_stage, meeting, meeting_type)
+
+    def _guard(self, meeting: Meeting, stage, *args) -> Meeting:
         try:
-            return self._run(meeting, data)
+            return stage(*args)
         except Exception as exc:
             logger.exception("[%s] falha inesperada no processamento", meeting.id)
             return self._fail(meeting, f"Erro inesperado: {exc}")
 
-    def _run(self, meeting: Meeting, data: ProcessMeetingInput) -> Meeting:
+    def _transcribe_stage(self, meeting: Meeting, data: ProcessMeetingInput) -> Meeting:
         audio = Path(data.audio_path)
         if not audio.exists() or audio.stat().st_size == 0:
             return self._fail(meeting, f"Áudio ausente ou vazio: {data.audio_path}")
@@ -83,12 +103,13 @@ class ProcessMeetingUC:
             "transcribe_s": round(time.monotonic() - t0, 1),
             "transcript_chars": len(meeting.transcript_for_llm),
         }
+        self._set(meeting, MeetingStatus.SUMMARIZING)
+        return meeting
 
+    def _summarize_stage(self, meeting: Meeting, meeting_type: MeetingType) -> Meeting:
         self._set(meeting, MeetingStatus.SUMMARIZING)
         t1 = time.monotonic()
-        s = self._summarize.execute(
-            SummarizeMeetingInput(meeting=meeting, meeting_type=data.meeting_type)
-        )
+        s = self._summarize.execute(SummarizeMeetingInput(meeting=meeting, meeting_type=meeting_type))
         if not s.success:
             return self._fail(meeting, s.error_message)
 
@@ -101,12 +122,14 @@ class ProcessMeetingUC:
     def _set(self, meeting: Meeting, status: MeetingStatus) -> None:
         meeting.status = status
         meeting.error = ""
+        meeting.queue = ""  # um worker pegou a reunião: saiu da fila
         self._repo.save(meeting)
         logger.info("[%s] status=%s", meeting.id, status.value)
 
     def _fail(self, meeting: Meeting, error: str) -> Meeting:
         meeting.status = MeetingStatus.ERROR
         meeting.error = error
+        meeting.queue = ""
         self._repo.save(meeting)
         logger.error("[%s] %s", meeting.id, error)
         return meeting

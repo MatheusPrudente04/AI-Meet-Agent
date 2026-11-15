@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from api.schemas.meeting import (
     DecisionSchema, MeetingDetailResponse, MeetingStatusResponse, SummarySchema, TaskSchema, UploadResponse,
 )
-from api.security import Principal, current_principal
+from api.security import Principal, current_principal, rate_limited
 from config.settings import get_settings
 from domain.entities.meeting import Meeting, MeetingStatus
 from infrastructure.email.email_sender import EmailSender
@@ -38,12 +38,15 @@ AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".webm", ".ogg", ".flac", ".mp4", ".aa
 _BLOCK = 1024 * 1024
 
 
+_TOO_MANY = {429: {"description": "Acima de RATE_LIMIT_PER_MINUTE pedidos por minuto (cabeçalho Retry-After)"}}
+
+
 @router.post("/upload", response_model=UploadResponse, summary="Envia um áudio para processar", responses={
-    413: {"description": "Arquivo acima de MAX_UPLOAD_MB"}, 415: {"description": "Formato não aceito"},
+    413: {"description": "Arquivo acima de MAX_UPLOAD_MB"}, 415: {"description": "Formato não aceito"}, **_TOO_MANY,
 })
 def upload_meeting(
     file: UploadFile = File(...), title: str = "Reunião sem título",
-    principal: Principal = Depends(current_principal),
+    principal: Principal = Depends(rate_limited),
 ):
     """Recebe áudio, salva e despacha o processamento. Acompanhe por GET /meetings/{id}/status."""
     suffix = Path(file.filename or "").suffix.lower()
@@ -88,9 +91,9 @@ class SendBotRequest(BaseModel):
 
 @router.post("/bot", response_model=UploadResponse, summary="Manda o bot para uma reunião", responses={
     409: {"description": "Você já mandou o bot a este link e a reunião não acabou"},
-    422: {"description": "Link não reconhecido ou plataforma sem suporte"},
+    422: {"description": "Link não reconhecido ou plataforma sem suporte"}, **_TOO_MANY,
 })
-def send_bot(body: SendBotRequest, principal: Principal = Depends(current_principal)):
+def send_bot(body: SendBotRequest, principal: Principal = Depends(rate_limited)):
     """Enfileira o bot e responde na hora com o id. Quem organiza a reunião
     precisa admitir o bot quando ele pedir para entrar."""
     try:
@@ -143,7 +146,10 @@ def reprocess(meeting_id: str, principal: Principal = Depends(current_principal)
             summary="Andamento do processamento")
 def get_status(meeting_id: str, principal: Principal = Depends(current_principal)):
     """Leve, para consultar a cada poucos segundos enquanto status não for `done` ou `error`."""
-    return _to_response(_meeting(meeting_id, principal), with_summary=True)
+    meeting = _meeting(meeting_id, principal)
+    response = _to_response(meeting, with_summary=True)
+    response.queue_position = get_container().queue_position(meeting)
+    return response
 
 
 class TaskDoneRequest(BaseModel):

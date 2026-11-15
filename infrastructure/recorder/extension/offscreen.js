@@ -69,14 +69,14 @@ async function startRecording({ streamId, session, endpoint, chunkMs, token }) {
 
   recorder = new MediaRecorder(stream, { mimeType });
 
-  recorder.ondataavailable = async (e) => {
-    if (!e.data || e.data.size === 0) return;
-    const seq = chunkSeq++;
+  // Um envio por vez: dois POSTs simultâneos podem chegar fora de ordem e corromper o webm.
+  let sending = Promise.resolve();
+  const send = async (data, seq) => {
     try {
       const resp = await fetch(`${captureEndpoint}/capture/chunk?session=${captureSession}&seq=${seq}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/octet-stream', 'X-Capture-Token': captureToken },
-        body: e.data,
+        body: data,
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       await report({ recording: true, chunks: seq + 1, error: null });
@@ -85,7 +85,14 @@ async function startRecording({ streamId, session, endpoint, chunkMs, token }) {
     }
   };
 
+  recorder.ondataavailable = (e) => {
+    if (!e.data || e.data.size === 0) return;
+    const seq = chunkSeq++;
+    sending = sending.then(() => send(e.data, seq));
+  };
+
   recorder.onstop = async () => {
+    await sending;  // finaliza só depois do último pedaço
     try {
       await fetch(`${captureEndpoint}/capture/finalize?session=${captureSession}`, {
         method: 'POST',

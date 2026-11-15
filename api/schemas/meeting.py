@@ -42,6 +42,8 @@ class MeetingStatusResponse(BaseModel):
     duration_minutes: float = 0.0
     participants: list[str] = []
     summary: Optional[SummarySchema] = Field(None, description="Ausente na listagem e enquanto não houver resumo")
+    queue_position: int = Field(0, description="Só em GET /meetings/{id}/status: posição na fila da etapa atual "
+                                               "(1 = é a próxima; 0 = não está esperando)")
 
 
 class MeetingDetailResponse(MeetingStatusResponse):

@@ -58,7 +58,21 @@ Abra http://localhost:8501, crie sua conta (a primeira conta herda as reuniões 
 cole o link da reunião e envie o bot. Quem organiza a reunião precisa
 **admitir** o bot quando ele pedir para entrar. A tela acompanha o andamento sozinha.
 
-Depois de atualizar o código: `docker compose up -d --build` e reinicie o worker do bot.
+Depois de atualizar o código: `docker compose up -d --build --remove-orphans` e reinicie o worker do bot.
+
+**Vários usuários ao mesmo tempo (ADR-015).** Transcrição e resumo têm filas e workers próprios
+(`worker-transcribe`, `worker-llm`); o 1º envio de cada usuário passa na frente do 2º de qualquer
+outro. Mais paralelismo: `docker compose up -d --scale worker-transcribe=2` (cada um carrega o
+Whisper na memória). Para gravar duas reuniões ao mesmo tempo, rode um worker do bot por perfil,
+cada um com seu login (`bot_setup`):
+
+```bash
+BOT_CHROME_PROFILE=./bot_chrome_profile_2 python -m infrastructure.recorder.bot_setup   # uma vez
+BOT_CHROME_PROFILE=./bot_chrome_profile_2 python main.py --bot-worker
+```
+
+Teste de carga, sempre contra um banco de rascunho com cadastro aberto:
+`python -m scripts.load_test --api http://localhost:8001 --audio reuniao.wav --uploads 4,1,1`.
 
 ### Modo de desenvolvimento (sem Docker)
 
@@ -151,7 +165,8 @@ No Teams e no Zoom o bot entra como convidado pelo navegador, com o nome `BOT_NA
   (`playwright_bot_recorder.py` para o Meet, `platforms.py` para as demais).
 - Reuniões longas são resumidas em partes e o chat consulta só os trechos ligados à pergunta
   (ADR-010). `LLM_CONTEXT_CHARS` ajusta o tamanho de cada parte.
-- O worker do bot grava uma reunião por vez.
+- Cada worker do bot grava uma reunião por vez (um perfil do Chrome por worker).
+- Limite de 30 envios, bots e perguntas por usuário por minuto (`RATE_LIMIT_PER_MINUTE`).
 - Login: 5 senhas erradas bloqueiam por 15 minutos; não há confirmação de e-mail no cadastro.
   A recuperação de senha exige SMTP configurado.
 - Dois usuários que mandam o bot ao mesmo link compartilham uma gravação; cada um recebe a

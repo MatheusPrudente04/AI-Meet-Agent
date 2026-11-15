@@ -107,6 +107,11 @@ class Meeting:
     chat_history: list[dict] = field(default_factory=list)
     # Medições do processamento (tempos em segundos, tamanho da transcrição). Ver ADR-010.
     metrics: dict = field(default_factory=dict)
+    # Esperando um worker (ADR-015): fila "transcribe" ou "llm"; vazio quando não está na fila.
+    # A ordem de atendimento é (queue_priority, queued_at); 0 é a maior prioridade.
+    queue: str = ""
+    queue_priority: int = 0
+    queued_at: Optional[datetime] = None
 
     @property
     def participants_header(self) -> str:

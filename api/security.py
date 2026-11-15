@@ -12,7 +12,10 @@ Em solo (desenvolvimento) não há login; sem `API_KEY` a API fica aberta.
 """
 import hashlib
 import hmac
+import logging
+import time
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Optional
 
 from fastapi import Depends, Header, HTTPException
@@ -21,6 +24,8 @@ from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBea
 from config.settings import get_settings
 from domain.entities.user import User
 from presentation.container import get_container
+
+logger = logging.getLogger(__name__)
 
 bearer_scheme = HTTPBearer(auto_error=False, description="Token devolvido por POST /auth/login ou /auth/register.")
 api_key_scheme = APIKeyHeader(name="X-API-Key", auto_error=False, description="Chave de serviço (API_KEY do .env).")
@@ -70,3 +75,30 @@ def require_capture_token(session: str, x_capture_token: str = Header(default=""
     key = get_settings().api_key
     if key and not hmac.compare_digest(x_capture_token.encode(), capture_token(session, key).encode()):
         raise HTTPException(status_code=401, detail="Token de captura ausente ou inválido")
+
+
+@lru_cache(maxsize=1)
+def _redis():
+    import redis
+    return redis.Redis.from_url(get_settings().redis_url, socket_timeout=1)
+
+
+def rate_limited(principal: Principal = Depends(current_principal)) -> Principal:
+    """Até RATE_LIMIT_PER_MINUTE pedidos caros (envio, bot, chat) por usuário por minuto
+    (ADR-015). Contador no Redis, compartilhado entre os processos da API. A chave de
+    serviço e o modo solo (sem Redis) não têm limite."""
+    settings = get_settings()
+    limit = settings.rate_limit_per_minute
+    if principal.user is None or limit <= 0 or not settings.is_collab:
+        return principal
+    key = f"ratelimit:{principal.user.id}:{int(time.time() // 60)}"
+    try:
+        pipe = _redis().pipeline()
+        count, _ = pipe.incr(key).expire(key, 120).execute()
+    except Exception as exc:  # Redis fora: o limite é proteção, não pode derrubar a API
+        logger.warning("Limite de pedidos indisponível: %s", exc)
+        return principal
+    if count > limit:
+        raise HTTPException(429, f"Muitos pedidos: o limite é {limit} por minuto. Tente de novo em instantes.",
+                            headers={"Retry-After": str(60 - int(time.time()) % 60)})
+    return principal

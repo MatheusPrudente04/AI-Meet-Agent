@@ -233,6 +233,10 @@ frente à linha de base.
 
 ## Sprint 9 — Concorrência e fila para N usuários (ADR-015)
 
+**Implementada em 2026-11-15**, medida no host (Docker em manutenção); números e desvios na ADR-015.
+Justiça ficou por prioridade na fila, não por limite K por usuário. Falta validar no compose
+(`worker-transcribe`/`worker-llm`, `--scale`) e com duas reuniões reais ao mesmo tempo (S9-5).
+
 Objetivo: com vários usuários ao mesmo tempo, ninguém espera atrás da reunião longa de outro e a
 API continua respondendo rápido.
 

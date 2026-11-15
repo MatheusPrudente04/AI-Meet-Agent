@@ -88,6 +88,7 @@ class FakeContainer:
     dispatch_bot = Container.dispatch_bot
     send_password_reset = Container.send_password_reset
     _title_from_calendar = Container._title_from_calendar
+    queue_position = Container.queue_position
     auth = None  # como em solo; os testes de login ligam com `with_login`
     calendar = None
     _is_collab = True
@@ -105,6 +106,7 @@ def ctx(tmp_path, monkeypatch):
     settings = SimpleNamespace(
         api_key=KEY, audio_storage_path=str(tmp_path / "audio"), max_upload_mb=1,
         capture_max_chunk_mb=1, capture_max_session_mb=2, app_mode="solo",
+        rate_limit_per_minute=0, is_collab=False,
     )
     repo = JsonMeetingRepository(str(tmp_path / "meetings"))
     queued = []

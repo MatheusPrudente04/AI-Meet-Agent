@@ -1,6 +1,6 @@
 # Meet Agent — produção local (APP_MODE=collab).
 #
-#   docker compose up -d --build          → mongo, redis, api, worker, streamlit
+#   docker compose up -d --build --remove-orphans → mongo, redis, api, workers (transcribe, llm), streamlit
 #   python main.py --bot-worker           → no host: o bot usa o Chromium e o login do Google locais
 #
 # Portas no host: API 8001, Streamlit 8501, Redis 6380, Mongo 27018
@@ -17,6 +17,7 @@ x-app: &app
     APP_MODE: collab
     TZ: America/Sao_Paulo   # mesmo fuso do host: o bot grava started_at fora do container
     API_PORT: "8000"
+    API_WORKERS: "2"
     MONGO_URI: mongodb://mongo:27017
     REDIS_URL: redis://redis:6379/0
     OLLAMA_BASE_URL: http://host.docker.internal:11434/v1
@@ -44,9 +45,16 @@ services:
       timeout: 5s
       retries: 3
 
-  worker:
+  # Uma fila por etapa (ADR-015). Mais paralelismo: `docker compose up -d --scale worker-transcribe=2`
+  # (cada worker de transcrição carrega o Whisper na memória; o do LLM só faz pedidos ao Ollama,
+  # que atende OLLAMA_NUM_PARALLEL pedidos por vez).
+  worker-transcribe:
     <<: *app
-    command: python main.py --worker
+    command: python main.py --worker transcribe
+
+  worker-llm:
+    <<: *app
+    command: python main.py --worker llm
 
   streamlit:
     <<: *app

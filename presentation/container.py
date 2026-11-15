@@ -177,13 +177,13 @@ class Container:
         """
         meeting = self.repository.find_by_id(meeting_id) or Meeting(id=meeting_id, title=title, owner_id=owner_id)
         meeting.audio_path = audio_path
-        self.repository.save(meeting)
+        meeting.status, meeting.error = MeetingStatus.PENDING, ""
 
         if self._is_collab:
-            from worker.tasks import process_meeting_task
-            process_meeting_task.delay(meeting_id, audio_path, title)
+            self.enqueue(meeting, "transcribe", title=title)
             return
 
+        self.repository.save(meeting)
         data = ProcessMeetingInput(meeting_id, audio_path, title)
         if wait:
             self.process_meeting.execute(data)
@@ -193,6 +193,40 @@ class Container:
                 name=f"process-{meeting_id[:8]}", daemon=True,
             ).start()
 
+    def enqueue(self, meeting: Meeting, queue: str, title: str = "") -> None:
+        """Põe a reunião na fila de uma etapa ("transcribe" ou "llm") do Celery (ADR-015)."""
+        from worker.tasks import process_meeting_task, summarize_meeting_task
+        meeting.queue = queue
+        meeting.queue_priority = self._priority(meeting)
+        meeting.queued_at = datetime.now()
+        self.repository.save(meeting)
+        if queue == "transcribe":
+            process_meeting_task.apply_async((meeting.id, meeting.audio_path, title or meeting.title),
+                                             priority=meeting.queue_priority)
+        else:
+            summarize_meeting_task.apply_async((meeting.id,), priority=meeting.queue_priority)
+
+    def _priority(self, meeting: Meeting) -> int:
+        """Quantas reuniões do mesmo dono já estão na fila ou em processamento (0 a 9).
+
+        Justiça entre usuários (S9-3): o 1º envio de cada usuário tem prioridade 0; o 10º
+        de quem mandou dez vai depois do 1º de quem mandou um. Ninguém é recusado.
+        """
+        busy = [m for m in self.repository.list_all(meeting.owner_id)
+                if m.id != meeting.id and not m.source_id
+                and (m.queue or m.status in (MeetingStatus.TRANSCRIBING, MeetingStatus.SUMMARIZING))]
+        return min(len(busy), 9)
+
+    def queue_position(self, meeting: Meeting) -> int:
+        """Posição na fila da etapa (1 = é a próxima); 0 se não está esperando.
+        Conta reuniões de todos os usuários, na ordem em que o Celery as entrega."""
+        target = self.repository.find_by_id(meeting.source_id) if meeting.source_id else meeting
+        if target is None or not target.queue or target.queued_at is None:
+            return 0
+        mine = (target.queue_priority, target.queued_at)
+        ahead = [m for m in self.repository.find_by(queue=target.queue)
+                 if m.id != target.id and m.queued_at and (m.queue_priority, m.queued_at) < mine]
+        return len(ahead) + 1
 
     def set_task_done(self, meeting_id: str, index: int, done: bool, owner_id: Optional[str] = None) -> Meeting:
         """Marca ou desmarca uma tarefa da reunião e grava."""

@@ -552,7 +552,7 @@ A memória entre reuniões (§14) ainda não existe: o agente avisa que só enxe
 
 ## ADR-015 — Concorrência: filas por etapa e justiça entre usuários
 
-**Status.** Aceita pelo dono do produto em 2026-11-15. Metas definidas na S9-1, depois da medição.
+**Status.** Aceita pelo dono do produto em 2026-11-15; implementada na Sprint 9 (ver "Como ficou").
 
 **Contexto (medido).** API em um processo; worker de processamento e worker do bot com um
 trabalho por vez (`--pool=solo`); Ollama com um pedido por vez. Uma fila única (FIFO) faz a
@@ -581,6 +581,52 @@ reunião de 2 h de um usuário segurar a transcrição de todos.
 hardware de Whisper e LLM, e a ADR registra o número medido.
 
 **Reverte-se assim.** Voltar para uma fila só é mudar o roteamento das tasks.
+
+**Como ficou (2026-11-15, Sprint 9).**
+- Filas `transcribe` (task `process_meeting`) e `llm` (task `summarize_meeting`); a transcrição
+  põe a reunião na fila do LLM ao terminar. `ProcessMeetingUC` continua o único pipeline, agora
+  com as etapas `transcribe()` e `summarize()`; `execute()` roda as duas (modo solo).
+  Compose: serviços `worker-transcribe` e `worker-llm`, escaláveis com `--scale`.
+- **Desvio na justiça:** em vez de segurar envios acima de K por usuário (exige um despachante
+  e estado de "retido"), cada tarefa vai para a fila com **prioridade = quantas reuniões do mesmo
+  dono já estão na fila ou em processamento** (0 a 9; Redis com `priority_steps`). O 1º envio de
+  cada usuário sai antes do 2º de qualquer um; ninguém é recusado nem fica retido. Limitação: a
+  prioridade é fixada ao entrar na fila; com 10+ envios simultâneos de um usuário os últimos
+  empatam na 9.
+- `worker_prefetch_multiplier=1` e `task_acks_late=True`: um worker só reserva o que executa, e a
+  tarefa de um worker que morreu volta para a fila. `visibility_timeout` de 6 h (mais que a
+  transcrição mais longa): depois de um `kill -9` a reunião só volta à fila nesse prazo; antes
+  disso, "Reprocessar" resolve. A task do bot ignora a reentrega se a reunião já passou de `pending`.
+- Limite por usuário de `RATE_LIMIT_PER_MINUTE` (30) envios, bots e perguntas por minuto, contado
+  no Redis (vale entre os processos da API); 429 com `Retry-After`. Chave de serviço sem limite.
+  Redis fora: o limite é desligado com aviso no log, a API segue.
+- API com `API_WORKERS` processos (2 no compose). Chat com no máximo `CHAT_MAX_CONCURRENT` (2)
+  chamadas ao LLM por processo; o excedente espera até 60 s e depois recebe 503.
+- `GET /meetings/{id}/status` devolve `queue_position` (1 = é a próxima), calculada pelos campos
+  `queue`, `queue_priority` e `queued_at` da reunião; o Streamlit mostra "3º na fila".
+- Bots em paralelo: um `python main.py --bot-worker` por perfil (`BOT_CHROME_PROFILE=<pasta>`); o
+  nome do nó Celery vem da pasta. Cada perfil precisa do login do bot (`bot_setup`). **Não
+  validado com duas reuniões reais.** A extensão agora envia um pedaço de áudio por vez (dois
+  envios simultâneos podiam chegar fora de ordem, risco que cresce com vários processos na API).
+
+**Medição (S9-1, `python -m scripts.load_test`, 2026-11-15).** Host (MacBook Air, CPU), Mongo e
+Redis de rascunho, API com 2 processos, 1 worker por fila, Whisper `tiny`, `qwen2.5:7b` no Ollama,
+áudio sintético de 15 s; 3 usuários (o 1º envia 4, os outros 1 cada, nessa ordem); 8 leitores
+consultando `GET /meetings` e `/status` sem pausa.
+
+| | Resultado |
+|---|---|
+| Leituras (216 mil pedidos) | `GET /meetings` p50 4 ms, p95 8 ms; `/status` p50 4 ms, p95 10 ms; máx. 224 ms |
+| Ordem de atendimento | u0#1, **u1#1, u2#1**, u0#2, u0#3, u0#4 (em fila única: u1 seria o 5º) |
+| Pronto em | u1: 64 s (seria ~105 s na fila única); último da u0: 119 s |
+| Dado cruzado / erros | nenhum |
+| Limite por minuto (3) | 4º envio: 429, `Retry-After: 52` |
+| 5 chats simultâneos | todos 200, entre 11 s e 30 s; `/status` durante: máx. 5 ms |
+
+**Metas da 1.0** (a medir de novo no servidor, S11-5): p95 das leituras abaixo de 200 ms com 8
+leitores contínuos; o 1º envio de cada usuário começa antes do 2º envio de qualquer outro; zero
+dado cruzado. O teto de usuários simultâneos é o hardware de Whisper e LLM: com `medium` em CPU,
+cada worker de transcrição usa ~2 GB de memória.
 
 ---
 

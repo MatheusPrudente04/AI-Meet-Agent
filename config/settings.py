@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     max_upload_mb: int = 500
     capture_max_chunk_mb: int = 10
     capture_max_session_mb: int = 1024
+    # Concorrência (ADR-015)
+    api_workers: int = 1                 # processos do uvicorn
+    chat_max_concurrent: int = 2         # chamadas de chat ao LLM ao mesmo tempo, por processo da API
+    rate_limit_per_minute: int = 30      # envios, bots e perguntas por usuário por minuto (0 = sem limite)
 
     # ── Áudio ─────────────────────────────────────────────────────────
     max_audio_size_mb: int = 25
