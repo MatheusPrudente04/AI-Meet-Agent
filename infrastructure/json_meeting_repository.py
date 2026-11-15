@@ -25,11 +25,13 @@ class JsonMeetingRepository(IMeetingRepository):
             return None
         return meeting_from_dict(json.loads(path.read_text(encoding="utf-8")))
 
-    def list_all(self) -> list[Meeting]:
+    def list_all(self, owner_id: Optional[str] = None) -> list[Meeting]:
         meetings = [
             meeting_from_dict(json.loads(p.read_text(encoding="utf-8")))
             for p in self._base.glob("*.json")
         ]
+        if owner_id is not None:
+            meetings = [m for m in meetings if m.owner_id == owner_id]
         return sorted(meetings, key=lambda m: m.started_at, reverse=True)
 
     def delete(self, meeting_id: str) -> None:

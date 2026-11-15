@@ -2,13 +2,14 @@ import re
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from api.schemas.meeting import (
-    DecisionSchema, MeetingStatusResponse, SummarySchema, TaskSchema, UploadResponse,
+    DecisionSchema, MeetingDetailResponse, MeetingStatusResponse, SummarySchema, TaskSchema, UploadResponse,
 )
+from api.security import Principal, current_principal
 from config.settings import get_settings
 from domain.entities.meeting import Meeting, MeetingStatus
 from infrastructure.email.email_sender import EmailSender
@@ -16,20 +17,35 @@ from infrastructure.exporters.markdown_exporter import MarkdownExporter
 from presentation.container import get_container
 
 router = APIRouter()
+_NOT_FOUND = {404: {"description": "Reunião não existe ou é de outro usuário"}}
 
 
-@router.get("/", response_model=list[MeetingStatusResponse])
-def list_meetings():
-    return [_to_response(m, with_summary=False) for m in get_container().repository.list_all()]
+def _meeting(meeting_id: str, principal: Principal) -> Meeting:
+    meeting = get_container().meeting_for(meeting_id, principal.owner_id)
+    if meeting is None:
+        raise HTTPException(404, "Reunião não encontrada")
+    return meeting
+
+
+@router.get("/", response_model=list[MeetingStatusResponse], summary="Lista as reuniões do usuário")
+def list_meetings(principal: Principal = Depends(current_principal)):
+    """Da mais recente para a mais antiga, sem resumo nem transcrição."""
+    meetings = get_container().repository.list_all(principal.owner_id)
+    return [_to_response(m, with_summary=False) for m in meetings]
 
 
 AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".webm", ".ogg", ".flac", ".mp4", ".aac"}
 _BLOCK = 1024 * 1024
 
 
-@router.post("/upload", response_model=UploadResponse)
-def upload_meeting(file: UploadFile = File(...), title: str = "Reunião sem título"):
-    """Recebe áudio, salva e despacha o processamento. Acompanhe por GET /{id}/status."""
+@router.post("/upload", response_model=UploadResponse, summary="Envia um áudio para processar", responses={
+    413: {"description": "Arquivo acima de MAX_UPLOAD_MB"}, 415: {"description": "Formato não aceito"},
+})
+def upload_meeting(
+    file: UploadFile = File(...), title: str = "Reunião sem título",
+    principal: Principal = Depends(current_principal),
+):
+    """Recebe áudio, salva e despacha o processamento. Acompanhe por GET /meetings/{id}/status."""
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in AUDIO_SUFFIXES:
         raise HTTPException(415, f"Formato não aceito. Use um de: {', '.join(sorted(AUDIO_SUFFIXES))}")
@@ -56,7 +72,7 @@ def upload_meeting(file: UploadFile = File(...), title: str = "Reunião sem tít
         audio_path.unlink(missing_ok=True)
         raise HTTPException(422, "Arquivo vazio")
 
-    get_container().enqueue_processing(meeting_id, str(audio_path), title)
+    get_container().enqueue_processing(meeting_id, str(audio_path), title, owner_id=principal.owner_id or "")
     return UploadResponse(
         meeting_id=meeting_id,
         status=MeetingStatus.PENDING,
@@ -65,15 +81,18 @@ def upload_meeting(file: UploadFile = File(...), title: str = "Reunião sem tít
 
 
 class SendBotRequest(BaseModel):
-    meeting_url: str
-    title: str = ""
+    meeting_url: str = Field(examples=["https://meet.google.com/abc-defg-hij"],
+                             description="Link de uma das plataformas de GET /config")
+    title: str = Field("", description="Vazio = título do evento na agenda (se ligada) ou a data")
 
 
-@router.post("/bot", response_model=UploadResponse)
-def send_bot(body: SendBotRequest):
-    """Enfileira o bot para entrar na reunião. Responde na hora com o id."""
+@router.post("/bot", response_model=UploadResponse, summary="Manda o bot para uma reunião",
+             responses={422: {"description": "Link não reconhecido ou plataforma sem suporte"}})
+def send_bot(body: SendBotRequest, principal: Principal = Depends(current_principal)):
+    """Enfileira o bot e responde na hora com o id. Quem organiza a reunião
+    precisa admitir o bot quando ele pedir para entrar."""
     try:
-        meeting_id = get_container().dispatch_bot(body.meeting_url, body.title)
+        meeting_id = get_container().dispatch_bot(body.meeting_url, body.title, owner_id=principal.owner_id or "")
     except ValueError as exc:
         raise HTTPException(422, str(exc))
     return UploadResponse(
@@ -81,12 +100,31 @@ def send_bot(body: SendBotRequest):
     )
 
 
-@router.post("/{meeting_id}/process", response_model=UploadResponse)
-def reprocess(meeting_id: str):
-    """Reprocessa o áudio já gravado (após erro, ou se o bot caiu no meio)."""
-    meeting = get_container().repository.find_by_id(meeting_id)
-    if not meeting:
-        raise HTTPException(404, "Reunião não encontrada")
+@router.get("/{meeting_id}", response_model=MeetingDetailResponse, responses=_NOT_FOUND,
+            summary="Reunião completa: resumo, transcrição e conversa")
+def get_meeting(meeting_id: str, principal: Principal = Depends(current_principal)):
+    m = _meeting(meeting_id, principal)
+    return MeetingDetailResponse(
+        **_to_response(m, with_summary=True).model_dump(),
+        transcript=m.transcript_formatted or m.transcript_text,
+        chat_history=m.chat_history,
+        has_audio=bool(m.audio_path and Path(m.audio_path).exists()),
+    )
+
+
+@router.delete("/{meeting_id}", status_code=204, responses=_NOT_FOUND, summary="Apaga a reunião e a gravação")
+def delete_meeting(meeting_id: str, principal: Principal = Depends(current_principal)):
+    _meeting(meeting_id, principal)
+    get_container().repository.delete(meeting_id)
+    for f in Path(get_settings().audio_storage_path).glob(f"{meeting_id}.*"):
+        f.unlink(missing_ok=True)
+
+
+@router.post("/{meeting_id}/process", response_model=UploadResponse, summary="Reprocessa o áudio já gravado",
+             responses={**_NOT_FOUND, 409: {"description": "Reunião sem áudio gravado"}})
+def reprocess(meeting_id: str, principal: Principal = Depends(current_principal)):
+    """Refaz transcrição e resumo (após erro, ou se o bot caiu no meio)."""
+    meeting = _meeting(meeting_id, principal)
     if not meeting.audio_path or not Path(meeting.audio_path).exists():
         raise HTTPException(409, "Reunião sem áudio gravado")
     get_container().enqueue_processing(meeting_id, meeting.audio_path, meeting.title)
@@ -95,32 +133,33 @@ def reprocess(meeting_id: str):
     )
 
 
-@router.get("/{meeting_id}/status", response_model=MeetingStatusResponse)
-def get_status(meeting_id: str):
-    meeting = get_container().repository.find_by_id(meeting_id)
-    if not meeting:
-        raise HTTPException(404, "Reunião não encontrada")
-    return _to_response(meeting, with_summary=True)
+@router.get("/{meeting_id}/status", response_model=MeetingStatusResponse, responses=_NOT_FOUND,
+            summary="Andamento do processamento")
+def get_status(meeting_id: str, principal: Principal = Depends(current_principal)):
+    """Leve, para consultar a cada poucos segundos enquanto status não for `done` ou `error`."""
+    return _to_response(_meeting(meeting_id, principal), with_summary=True)
 
 
 class TaskDoneRequest(BaseModel):
     done: bool
 
 
-@router.patch("/{meeting_id}/tasks/{index}", response_model=MeetingStatusResponse)
-def set_task_done(meeting_id: str, index: int, body: TaskDoneRequest):
+@router.patch("/{meeting_id}/tasks/{index}", response_model=MeetingStatusResponse, responses=_NOT_FOUND,
+              summary="Marca ou desmarca uma tarefa")
+def set_task_done(meeting_id: str, index: int, body: TaskDoneRequest,
+                  principal: Principal = Depends(current_principal)):
+    """`index` é a posição da tarefa em `summary.tasks`, a partir de 0."""
     try:
-        meeting = get_container().set_task_done(meeting_id, index, body.done)
+        meeting = get_container().set_task_done(meeting_id, index, body.done, principal.owner_id)
     except LookupError as exc:
         raise HTTPException(404, str(exc))
     return _to_response(meeting, with_summary=True)
 
 
-@router.get("/{meeting_id}/export.md", response_class=PlainTextResponse)
-def export_markdown(meeting_id: str):
-    meeting = get_container().repository.find_by_id(meeting_id)
-    if not meeting:
-        raise HTTPException(404, "Reunião não encontrada")
+@router.get("/{meeting_id}/export.md", response_class=PlainTextResponse, responses=_NOT_FOUND,
+            summary="Reunião em Markdown")
+def export_markdown(meeting_id: str, principal: Principal = Depends(current_principal)):
+    meeting = _meeting(meeting_id, principal)
     return PlainTextResponse(MarkdownExporter().render(meeting), media_type="text/markdown; charset=utf-8")
 
 
@@ -128,11 +167,15 @@ class EmailTasksRequest(BaseModel):
     to: str
 
 
-@router.post("/{meeting_id}/tasks/email")
-def email_tasks(meeting_id: str, body: EmailTasksRequest):
-    meeting = get_container().repository.find_by_id(meeting_id)
-    if not meeting:
-        raise HTTPException(404, "Reunião não encontrada")
+class EmailTasksResponse(BaseModel):
+    ok: bool
+    to: str
+
+
+@router.post("/{meeting_id}/tasks/email", response_model=EmailTasksResponse, summary="Envia as tarefas por e-mail",
+             responses={**_NOT_FOUND, 409: {"description": "SMTP não configurado ou reunião sem tarefas"}})
+def email_tasks(meeting_id: str, body: EmailTasksRequest, principal: Principal = Depends(current_principal)):
+    meeting = _meeting(meeting_id, principal)
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", body.to):
         raise HTTPException(422, "E-mail inválido")
     try:
@@ -162,6 +205,7 @@ def _to_response(m: Meeting, with_summary: bool) -> MeetingStatusResponse:
         status=m.status,
         error=m.error,
         title=m.title,
+        platform=m.platform,
         started_at=m.started_at,
         duration_minutes=m.duration_minutes,
         participants=m.participants,

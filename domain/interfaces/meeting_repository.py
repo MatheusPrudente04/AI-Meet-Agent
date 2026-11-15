@@ -22,8 +22,8 @@ class IMeetingRepository(ABC):
 
     # Metodo de listar todas as reuniões salvas, organizadas por data de inicio da reunião 
     @abstractmethod
-    def list_all(self) -> list[Meeting]:
-        """Retorna todas as reuniões salvas, organizadas por data."""
+    def list_all(self, owner_id: Optional[str] = None) -> list[Meeting]:
+        """Reuniões organizadas por data. Com `owner_id`, só as daquele usuário."""
         ...
 
     # Metodo de deletar reunião por ID, removendo a reunnião do armazenamento persistente

@@ -1,0 +1,1676 @@
+{
+  "components": {
+    "schemas": {
+      "Body_upload_meeting_meetings_upload_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_meeting_meetings_upload_post",
+        "type": "object"
+      },
+      "ChatMessage": {
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "ChatMessage",
+        "type": "object"
+      },
+      "ChatRequest": {
+        "properties": {
+          "history": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChatMessage"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Omitido (recomendado) = usa e atualiza a conversa guardada na reunião.",
+            "title": "History"
+          },
+          "question": {
+            "examples": [
+              "Quais tarefas ficaram com a Maria?"
+            ],
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "ChatRequest",
+        "type": "object"
+      },
+      "ChatResponse": {
+        "properties": {
+          "answer": {
+            "title": "Answer",
+            "type": "string"
+          },
+          "meeting_id": {
+            "title": "Meeting Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "answer",
+          "meeting_id"
+        ],
+        "title": "ChatResponse",
+        "type": "object"
+      },
+      "ConfigResponse": {
+        "properties": {
+          "audio_formats": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Audio Formats",
+            "type": "array"
+          },
+          "calendar_enabled": {
+            "description": "Título do bot pode ser omitido: vem da agenda",
+            "title": "Calendar Enabled",
+            "type": "boolean"
+          },
+          "email_enabled": {
+            "description": "POST /meetings/{id}/tasks/email disponível",
+            "title": "Email Enabled",
+            "type": "boolean"
+          },
+          "login_enabled": {
+            "description": "Falso em APP_MODE=solo: não há usuários",
+            "title": "Login Enabled",
+            "type": "boolean"
+          },
+          "max_upload_mb": {
+            "title": "Max Upload Mb",
+            "type": "integer"
+          },
+          "platforms": {
+            "items": {
+              "$ref": "#/components/schemas/PlatformSchema"
+            },
+            "title": "Platforms",
+            "type": "array"
+          },
+          "registration_open": {
+            "title": "Registration Open",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "login_enabled",
+          "registration_open",
+          "email_enabled",
+          "calendar_enabled",
+          "max_upload_mb",
+          "audio_formats",
+          "platforms"
+        ],
+        "title": "ConfigResponse",
+        "type": "object"
+      },
+      "DecisionSchema": {
+        "properties": {
+          "context": {
+            "default": "",
+            "title": "Context",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          }
+        },
+        "required": [
+          "description"
+        ],
+        "title": "DecisionSchema",
+        "type": "object"
+      },
+      "EmailTasksRequest": {
+        "properties": {
+          "to": {
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to"
+        ],
+        "title": "EmailTasksRequest",
+        "type": "object"
+      },
+      "EmailTasksResponse": {
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "to": {
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "to"
+        ],
+        "title": "EmailTasksResponse",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "LoginRequest": {
+        "properties": {
+          "email": {
+            "examples": [
+              "maria@empresa.com"
+            ],
+            "maxLength": 254,
+            "title": "Email",
+            "type": "string"
+          },
+          "password": {
+            "maxLength": 200,
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "LoginRequest",
+        "type": "object"
+      },
+      "MeetingDetailResponse": {
+        "properties": {
+          "chat_history": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ChatMessage"
+            },
+            "title": "Chat History",
+            "type": "array"
+          },
+          "duration_minutes": {
+            "default": 0.0,
+            "title": "Duration Minutes",
+            "type": "number"
+          },
+          "error": {
+            "default": "",
+            "description": "Motivo, quando status = error",
+            "title": "Error",
+            "type": "string"
+          },
+          "has_audio": {
+            "default": false,
+            "description": "Há gravação em disco: a reunião pode ser reprocessada",
+            "title": "Has Audio",
+            "type": "boolean"
+          },
+          "meeting_id": {
+            "title": "Meeting Id",
+            "type": "string"
+          },
+          "participants": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Participants",
+            "type": "array"
+          },
+          "platform": {
+            "default": "",
+            "description": "meet, teams ou zoom; vazio para áudio enviado",
+            "title": "Platform",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MeetingStatus",
+            "description": "pending → recording → transcribing → summarizing → done | error"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SummarySchema"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Ausente na listagem e enquanto não houver resumo"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "transcript": {
+            "default": "",
+            "description": "Transcrição com o nome de quem falou em cada trecho",
+            "title": "Transcript",
+            "type": "string"
+          }
+        },
+        "required": [
+          "meeting_id",
+          "status",
+          "title",
+          "started_at"
+        ],
+        "title": "MeetingDetailResponse",
+        "type": "object"
+      },
+      "MeetingStatus": {
+        "description": "Etapa do processamento. Única fonte de status do sistema.",
+        "enum": [
+          "pending",
+          "recording",
+          "transcribing",
+          "summarizing",
+          "done",
+          "error"
+        ],
+        "title": "MeetingStatus",
+        "type": "string"
+      },
+      "MeetingStatusResponse": {
+        "properties": {
+          "duration_minutes": {
+            "default": 0.0,
+            "title": "Duration Minutes",
+            "type": "number"
+          },
+          "error": {
+            "default": "",
+            "description": "Motivo, quando status = error",
+            "title": "Error",
+            "type": "string"
+          },
+          "meeting_id": {
+            "title": "Meeting Id",
+            "type": "string"
+          },
+          "participants": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Participants",
+            "type": "array"
+          },
+          "platform": {
+            "default": "",
+            "description": "meet, teams ou zoom; vazio para áudio enviado",
+            "title": "Platform",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MeetingStatus",
+            "description": "pending → recording → transcribing → summarizing → done | error"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SummarySchema"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Ausente na listagem e enquanto não houver resumo"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "meeting_id",
+          "status",
+          "title",
+          "started_at"
+        ],
+        "title": "MeetingStatusResponse",
+        "type": "object"
+      },
+      "PlatformSchema": {
+        "properties": {
+          "example": {
+            "description": "Formato de link aceito",
+            "title": "Example",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "speaker_names": {
+            "description": "A transcrição traz o nome de quem falou",
+            "title": "Speaker Names",
+            "type": "boolean"
+          },
+          "validated": {
+            "description": "Falso = suporte ainda não validado em reunião real",
+            "title": "Validated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "example",
+          "validated",
+          "speaker_names"
+        ],
+        "title": "PlatformSchema",
+        "type": "object"
+      },
+      "RegisterRequest": {
+        "properties": {
+          "email": {
+            "examples": [
+              "maria@empresa.com"
+            ],
+            "maxLength": 254,
+            "title": "Email",
+            "type": "string"
+          },
+          "name": {
+            "examples": [
+              "Maria Souza"
+            ],
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "password": {
+            "maxLength": 200,
+            "minLength": 8,
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "email",
+          "password"
+        ],
+        "title": "RegisterRequest",
+        "type": "object"
+      },
+      "SendBotRequest": {
+        "properties": {
+          "meeting_url": {
+            "description": "Link de uma das plataformas de GET /config",
+            "examples": [
+              "https://meet.google.com/abc-defg-hij"
+            ],
+            "title": "Meeting Url",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "description": "Vazio = título do evento na agenda (se ligada) ou a data",
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "meeting_url"
+        ],
+        "title": "SendBotRequest",
+        "type": "object"
+      },
+      "SessionResponse": {
+        "properties": {
+          "token": {
+            "description": "Enviar em `Authorization: Bearer <token>` nas demais rotas.",
+            "title": "Token",
+            "type": "string"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserSchema"
+          }
+        },
+        "required": [
+          "token",
+          "user"
+        ],
+        "title": "SessionResponse",
+        "type": "object"
+      },
+      "SummarySchema": {
+        "properties": {
+          "decisions": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionSchema"
+            },
+            "title": "Decisions",
+            "type": "array"
+          },
+          "overview": {
+            "title": "Overview",
+            "type": "string"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/TaskSchema"
+            },
+            "title": "Tasks",
+            "type": "array"
+          },
+          "topics": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Topics",
+            "type": "array"
+          }
+        },
+        "required": [
+          "overview",
+          "topics",
+          "tasks",
+          "decisions"
+        ],
+        "title": "SummarySchema",
+        "type": "object"
+      },
+      "TaskDoneRequest": {
+        "properties": {
+          "done": {
+            "title": "Done",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "done"
+        ],
+        "title": "TaskDoneRequest",
+        "type": "object"
+      },
+      "TaskSchema": {
+        "properties": {
+          "deadline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "done": {
+            "default": false,
+            "title": "Done",
+            "type": "boolean"
+          },
+          "responsible": {
+            "title": "Responsible",
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "responsible"
+        ],
+        "title": "TaskSchema",
+        "type": "object"
+      },
+      "UploadResponse": {
+        "properties": {
+          "meeting_id": {
+            "title": "Meeting Id",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MeetingStatus"
+          }
+        },
+        "required": [
+          "meeting_id",
+          "status",
+          "message"
+        ],
+        "title": "UploadResponse",
+        "type": "object"
+      },
+      "UserSchema": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "email",
+          "created_at"
+        ],
+        "title": "UserSchema",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "APIKeyHeader": {
+        "description": "Chave de serviço (API_KEY do .env).",
+        "in": "header",
+        "name": "X-API-Key",
+        "type": "apiKey"
+      },
+      "HTTPBearer": {
+        "description": "Token devolvido por POST /auth/login ou /auth/register.",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "\nAPI do Meet Agent: o bot entra na reunião, grava, transcreve, resume e responde perguntas.\n\n## Autenticação\n\n1. `POST /auth/register` ou `POST /auth/login` devolve um `token`.\n2. Envie `Authorization: Bearer <token>` nas rotas de **meetings** e **chat**.\n3. Cada usuário enxerga só as próprias reuniões; a reunião de outro usuário responde 404.\n\nIntegrações sem usuário podem usar a chave de serviço no cabeçalho `X-API-Key`.\n\n## Fluxo de uma reunião\n\n1. `POST /meetings/bot` (link) ou `POST /meetings/upload` (áudio) devolve o `meeting_id`.\n2. Consulte `GET /meetings/{id}/status` a cada 5 s: `pending` → `recording` →\n   `transcribing` → `summarizing` → `done` (ou `error`, com o motivo em `error`).\n3. Com `done`, `GET /meetings/{id}` traz resumo, tarefas, transcrição e conversa.\n4. `POST /meetings/{id}/chat` responde perguntas sobre a reunião.\n\n## Erros\n\nToda resposta de erro tem o formato `{\"detail\": \"mensagem\"}` (ou a lista de validação do\nFastAPI em 422). `401` = credencial ausente, inválida ou sessão expirada: refaça o login.\n",
+    "title": "Meet Agent API",
+    "version": "2.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/auth/login": {
+      "post": {
+        "operationId": "login_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "E-mail ou senha incorretos"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Abre uma sessão",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "operationId": "logout_auth_logout_post",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Encerra a sessão atual",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "operationId": "me_auth_me_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserSchema"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Usuário da sessão",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/register": {
+      "post": {
+        "description": "Cria a conta e já devolve uma sessão aberta.",
+        "operationId": "register_auth_register_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "E-mail já cadastrado, dado inválido ou cadastro fechado"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cadastra um usuário",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/capture/chunk": {
+      "post": {
+        "operationId": "receive_chunk_capture_chunk_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session",
+            "required": true,
+            "schema": {
+              "title": "Session",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "seq",
+            "required": true,
+            "schema": {
+              "title": "Seq",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-capture-token",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "X-Capture-Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Receive Chunk Capture Chunk Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Receive Chunk",
+        "tags": [
+          "capture"
+        ]
+      }
+    },
+    "/capture/finalize": {
+      "post": {
+        "operationId": "finalize_capture_capture_finalize_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session",
+            "required": true,
+            "schema": {
+              "title": "Session",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-capture-token",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "X-Capture-Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Finalize Capture Capture Finalize Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Finalize Capture",
+        "tags": [
+          "capture"
+        ]
+      }
+    },
+    "/capture/status": {
+      "get": {
+        "operationId": "capture_status_capture_status_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session",
+            "required": true,
+            "schema": {
+              "title": "Session",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-capture-token",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "X-Capture-Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Capture Status Capture Status Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Capture Status",
+        "tags": [
+          "capture"
+        ]
+      }
+    },
+    "/config": {
+      "get": {
+        "description": "O front lê uma vez na partida para montar as telas (cadastro aberto? e-mail ligado? quais plataformas?).",
+        "operationId": "config_config_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "O que está ligado nesta instalação",
+        "tags": [
+          "sistema"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "description": "Confere as dependências de verdade: 503 se o banco ou a fila não respondem.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Saúde do banco e da fila",
+        "tags": [
+          "sistema"
+        ]
+      }
+    },
+    "/meetings/": {
+      "get": {
+        "description": "Da mais recente para a mais antiga, sem resumo nem transcrição.",
+        "operationId": "list_meetings_meetings__get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MeetingStatusResponse"
+                  },
+                  "title": "Response List Meetings Meetings  Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Lista as reuniões do usuário",
+        "tags": [
+          "meetings"
+        ]
+      }
+    },
+    "/meetings/bot": {
+      "post": {
+        "description": "Enfileira o bot e responde na hora com o id. Quem organiza a reunião\nprecisa admitir o bot quando ele pedir para entrar.",
+        "operationId": "send_bot_meetings_bot_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendBotRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Link não reconhecido ou plataforma sem suporte"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Manda o bot para uma reunião",
+        "tags": [
+          "meetings"
+        ]
+      }
+    },
+    "/meetings/upload": {
+      "post": {
+        "description": "Recebe áudio, salva e despacha o processamento. Acompanhe por GET /meetings/{id}/status.",
+        "operationId": "upload_meeting_meetings_upload_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "title",
+            "required": false,
+            "schema": {
+              "default": "Reunião sem título",
+              "title": "Title",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_meeting_meetings_upload_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "413": {
+            "description": "Arquivo acima de MAX_UPLOAD_MB"
+          },
+          "415": {
+            "description": "Formato não aceito"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Envia um áudio para processar",
+        "tags": [
+          "meetings"
+        ]
+      }
+    },
+    "/meetings/{meeting_id}": {
+      "delete": {
+        "operationId": "delete_meeting_meetings__meeting_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "meeting_id",
+            "required": true,
+            "schema": {
+              "title": "Meeting Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Reunião não existe ou é de outro usuário"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Apaga a reunião e a gravação",
+        "tags": [
+          "meetings"
+        ]
+      },
+      "get": {
+        "operationId": "get_meeting_meetings__meeting_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "meeting_id",
+            "required": true,
+            "schema": {
+              "title": "Meeting Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeetingDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Reunião não existe ou é de outro usuário"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Reunião completa: resumo, transcrição e conversa",
+        "tags": [
+          "meetings"
+        ]
+      }
+    },
+    "/meetings/{meeting_id}/chat": {
+      "post": {
+        "description": "A pergunta e a resposta entram em `chat_history` da reunião (GET /meetings/{id}).",
+        "operationId": "chat_meetings__meeting_id__chat_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "meeting_id",
+            "required": true,
+            "schema": {
+              "title": "Meeting Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Reunião não existe ou é de outro usuário"
+          },
+          "422": {
+            "description": "Reunião ainda não foi transcrita"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Pergunta sobre a reunião",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/meetings/{meeting_id}/export.md": {
+      "get": {
+        "operationId": "export_markdown_meetings__meeting_id__export_md_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "meeting_id",
+            "required": true,
+            "schema": {
+              "title": "Meeting Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Reunião não existe ou é de outro usuário"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Reunião em Markdown",
+        "tags": [
+          "meetings"
+        ]
+      }
+    },
+    "/meetings/{meeting_id}/process": {
+      "post": {
+        "description": "Refaz transcrição e resumo (após erro, ou se o bot caiu no meio).",
+        "operationId": "reprocess_meetings__meeting_id__process_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "meeting_id",
+            "required": true,
+            "schema": {
+              "title": "Meeting Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Reunião não existe ou é de outro usuário"
+          },
+          "409": {
+            "description": "Reunião sem áudio gravado"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Reprocessa o áudio já gravado",
+        "tags": [
+          "meetings"
+        ]
+      }
+    },
+    "/meetings/{meeting_id}/status": {
+      "get": {
+        "description": "Leve, para consultar a cada poucos segundos enquanto status não for `done` ou `error`.",
+        "operationId": "get_status_meetings__meeting_id__status_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "meeting_id",
+            "required": true,
+            "schema": {
+              "title": "Meeting Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeetingStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Reunião não existe ou é de outro usuário"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Andamento do processamento",
+        "tags": [
+          "meetings"
+        ]
+      }
+    },
+    "/meetings/{meeting_id}/tasks/email": {
+      "post": {
+        "operationId": "email_tasks_meetings__meeting_id__tasks_email_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "meeting_id",
+            "required": true,
+            "schema": {
+              "title": "Meeting Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailTasksRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailTasksResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Reunião não existe ou é de outro usuário"
+          },
+          "409": {
+            "description": "SMTP não configurado ou reunião sem tarefas"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Envia as tarefas por e-mail",
+        "tags": [
+          "meetings"
+        ]
+      }
+    },
+    "/meetings/{meeting_id}/tasks/{index}": {
+      "patch": {
+        "description": "`index` é a posição da tarefa em `summary.tasks`, a partir de 0.",
+        "operationId": "set_task_done_meetings__meeting_id__tasks__index__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "meeting_id",
+            "required": true,
+            "schema": {
+              "title": "Meeting Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "index",
+            "required": true,
+            "schema": {
+              "title": "Index",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskDoneRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeetingStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Reunião não existe ou é de outro usuário"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Marca ou desmarca uma tarefa",
+        "tags": [
+          "meetings"
+        ]
+      }
+    }
+  },
+  "tags": [
+    {
+      "description": "Cadastro, login e sessão do usuário.",
+      "name": "auth"
+    },
+    {
+      "description": "Reuniões: criar (bot ou upload), acompanhar, ler, apagar.",
+      "name": "meetings"
+    },
+    {
+      "description": "Perguntas sobre uma reunião já transcrita.",
+      "name": "chat"
+    },
+    {
+      "description": "Configuração para o front e verificação de saúde. Sem autenticação.",
+      "name": "sistema"
+    },
+    {
+      "description": "Uso interno do bot (áudio em chunks). O front não chama.",
+      "name": "capture"
+    }
+  ]
+}

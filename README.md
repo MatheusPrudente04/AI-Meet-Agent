@@ -1,7 +1,8 @@
 # Meet Agent
 
-Bot que entra em reuniões do Google Meet, grava o áudio, transcreve, identifica quem falou,
-gera um resumo com tarefas e decisões e responde perguntas sobre a reunião.
+Bot que entra em reuniões (Google Meet; Teams e Zoom em validação), grava o áudio, transcreve,
+identifica quem falou, gera um resumo com tarefas e decisões e responde perguntas sobre a reunião.
+Cada usuário tem a própria conta e vê só as próprias reuniões.
 
 Decisões de arquitetura: [docs/adr/README.md](docs/adr/README.md). Roteiro: [docs/roadmap.md](docs/roadmap.md).
 
@@ -50,7 +51,8 @@ python -m infrastructure.recorder.bot_setup     # uma vez: login manual da conta
 python main.py --bot-worker
 ```
 
-Abra http://localhost:8501, cole o link do Meet e envie o bot. Quem organiza a reunião precisa
+Abra http://localhost:8501, crie sua conta (a primeira conta herda as reuniões que já existiam),
+cole o link da reunião e envie o bot. Quem organiza a reunião precisa
 **admitir** o bot quando ele pedir para entrar. A tela acompanha o andamento sozinha.
 
 Depois de atualizar o código: `docker compose up -d --build` e reinicie o worker do bot.
@@ -67,14 +69,23 @@ python -m infrastructure.recorder.run_bot --url "https://meet.google.com/xxx-xxx
 
 ## API
 
-Todas as rotas exigem o cabeçalho `X-API-Key`, exceto `/health`.
+Documentação interativa (Swagger): http://localhost:8001/docs. O contrato para construir outro
+front está em [docs/api/openapi.json](docs/api/openapi.json) (ADR-013).
+
+As rotas de reunião aceitam `Authorization: Bearer <token>` (sessão de um usuário, que vê só as
+próprias reuniões) ou `X-API-Key` (chave de serviço, vê tudo).
 
 | Rota | Função |
 |------|--------|
+| `POST /auth/register`, `/auth/login` | Cria conta ou entra; devolvem o `token` da sessão |
+| `POST /auth/logout`, `GET /auth/me` | Encerra a sessão; usuário atual |
+| `GET /config` | O que está ligado: cadastro, e-mail, agenda, plataformas (sem autenticação) |
 | `GET /health` | Confere banco e fila; 503 se algum não responde |
-| `GET /meetings/` | Lista as reuniões |
+| `GET /meetings/` | Lista as reuniões do usuário |
+| `GET /meetings/{id}` | Reunião completa: resumo, transcrição e conversa |
+| `DELETE /meetings/{id}` | Apaga a reunião e a gravação |
 | `POST /meetings/upload` | Envia um áudio para processar (teto `MAX_UPLOAD_MB`) |
-| `POST /meetings/bot` | Manda o bot para um link do Meet |
+| `POST /meetings/bot` | Manda o bot para um link de reunião |
 | `GET /meetings/{id}/status` | Status, erro e resumo |
 | `POST /meetings/{id}/process` | Reprocessa o áudio já gravado |
 | `POST /meetings/{id}/chat` | Pergunta sobre a reunião (a conversa fica guardada) |
@@ -86,6 +97,23 @@ Todas as rotas exigem o cabeçalho `X-API-Key`, exceto `/health`.
 ```bash
 curl -H "X-API-Key: $API_KEY" http://localhost:8001/meetings/
 ```
+
+Depois de mudar rotas ou modelos, regenere o contrato:
+
+```bash
+docker compose run --rm --no-deps -v "$PWD/docs:/app/docs" api python -m api.export_openapi
+```
+
+## Plataformas
+
+| Plataforma | Estado | Nome de quem fala |
+|------------|--------|-------------------|
+| Google Meet | Validado em reunião real | Sim (legendas) |
+| Zoom | Escrito, **não validado**: rode o teste de fumaça antes de usar | Não ("Speaker N") |
+| Microsoft Teams | Escrito, **não validado**: rode o teste de fumaça antes de usar | Não ("Speaker N") |
+| Discord | Não suportado: exige bot oficial com token (ADR-012) | — |
+
+No Teams e no Zoom o bot entra como convidado pelo navegador, com o nome `BOT_NAME`.
 
 ## Recursos opcionais
 
@@ -102,6 +130,9 @@ curl -H "X-API-Key: $API_KEY" http://localhost:8001/meetings/
   de 30 dias (`AUDIO_RETENTION_DAYS`). Restaurar: `scripts/backup.sh restore <arquivo>`.
 - **Reunião com erro:** a mensagem aparece na interface; o botão "Reprocessar áudio gravado" refaz
   a transcrição e o resumo sem precisar de nova reunião.
+- **Teste de fumaça do bot:** `python -m infrastructure.recorder.run_bot --url <link> --smoke 30`
+  (com a API no ar e alguém para admitir o bot). Uma linha `FALHA` em legendas, presentes ou bloco
+  do bot indica que o Meet mudou a tela.
 - **Diagnóstico de nomes:** `data/audio/<id>.speakers.jsonl` mostra se as legendas ligaram
   (`captions`), quem estava (`participants`) e quem falou (`speaker`).
 
@@ -110,10 +141,13 @@ curl -H "X-API-Key: $API_KEY" http://localhost:8001/meetings/
 - O bot enxerga o **nome de exibição** de cada participante, não o e-mail.
 - Trechos em que o Meet não gerou legenda ficam como "Speaker N" (com uma única pessoa além do
   bot, todas as falas são atribuídas a ela).
-- O Meet muda a tela sem aviso; os seletores ficam em `infrastructure/recorder/playwright_bot_recorder.py`.
+- As plataformas mudam a tela sem aviso; os seletores ficam em `infrastructure/recorder/`
+  (`playwright_bot_recorder.py` para o Meet, `platforms.py` para as demais).
 - Reuniões longas são resumidas em partes e o chat consulta só os trechos ligados à pergunta
   (ADR-010). `LLM_CONTEXT_CHARS` ajusta o tamanho de cada parte.
 - O worker do bot grava uma reunião por vez.
+- Login: sem limite de tentativas, confirmação de e-mail ou recuperação de senha (ADR-011).
+  Resolver antes de expor a API fora da máquina. No Streamlit, atualizar a página pede login de novo.
 
 ## Testes e dependências
 

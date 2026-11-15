@@ -23,9 +23,11 @@ class MongoMeetingRepository(IMeetingRepository):
         doc = self._col.find_one({"_id": meeting_id})
         return meeting_from_dict(doc) if doc else None
 
-    def list_all(self) -> list[Meeting]:
+    def list_all(self, owner_id: Optional[str] = None) -> list[Meeting]:
         # ponytail: carrega as transcrições inteiras; usar projeção quando a lista ficar lenta
-        return [meeting_from_dict(d) for d in self._col.find().sort("started_at", -1)]
+        # "" também casa com documentos antigos, que não têm o campo.
+        query = {} if owner_id is None else {"owner_id": owner_id or {"$in": ["", None]}}
+        return [meeting_from_dict(d) for d in self._col.find(query).sort("started_at", -1)]
 
     def delete(self, meeting_id: str) -> None:
         self._col.delete_one({"_id": meeting_id})

@@ -49,6 +49,8 @@ _PAGES = {
 
 def _init():
     defaults = {
+        "user": None,
+        "token": "",
         "page": "meetings",
         "meeting": None,
         "mode_selected": False,
@@ -58,6 +60,58 @@ def _init():
             st.session_state[k] = v
 
 _init()
+
+
+def login_screen() -> None:
+    """Entrar ou criar conta (ADR-011). Só existe em collab; em solo não há usuários."""
+    st.title("🎤 Meet Agent")
+    from use_cases.auth import MIN_PASSWORD, AuthError
+    tab_login, tab_signup = st.tabs(["Entrar", "Criar conta"])
+    with tab_login, st.form("login"):
+        email = st.text_input("E-mail")
+        password = st.text_input("Senha", type="password")
+        if st.form_submit_button("Entrar", type="primary", use_container_width=True):
+            try:
+                st.session_state.token, st.session_state.user = container.auth.login(email, password, "streamlit")
+                st.rerun()
+            except AuthError as e:
+                st.error(str(e))
+    with tab_signup:
+        if not settings.allow_registration:
+            st.info("O cadastro de novos usuários está fechado. Peça acesso a quem administra o sistema.")
+        else:
+            with st.form("signup"):
+                name = st.text_input("Nome")
+                email = st.text_input("E-mail", key="signup_email")
+                password = st.text_input(f"Senha (mínimo de {MIN_PASSWORD} caracteres)", type="password", key="signup_pw")
+                confirm = st.text_input("Repita a senha", type="password")
+                if st.form_submit_button("Criar conta", type="primary", use_container_width=True):
+                    if password != confirm:
+                        st.error("As senhas não conferem.")
+                    else:
+                        try:
+                            user = container.register_user(name, email, password)
+                            st.session_state.token = container.auth.open_session(user, "streamlit")
+                            st.session_state.user = user
+                            st.rerun()
+                        except AuthError as e:
+                            st.error(str(e))
+
+
+if container.auth is not None:
+    # A sessão vive no banco: se foi encerrada ou venceu, volta para o login.
+    if st.session_state.token and container.auth.user_for_token(st.session_state.token) is None:
+        st.session_state.token, st.session_state.user, st.session_state.meeting = "", None, None
+    if st.session_state.user is None:
+        login_screen()
+        st.stop()
+
+# Dono das reuniões desta sessão. None (solo) = sem filtro.
+OWNER = st.session_state.user.id if st.session_state.user else None
+
+
+def my_meetings() -> list:
+    return container.repository.list_all(OWNER)
 
 
 def select_meeting(meeting) -> None:
@@ -71,7 +125,7 @@ def select_meeting(meeting) -> None:
 
 
 if st.session_state.meeting is None and "m" in st.query_params:
-    st.session_state.meeting = container.repository.find_by_id(st.query_params["m"])
+    st.session_state.meeting = container.meeting_for(st.query_params["m"], OWNER)
 
 
 _STATUS_LABEL = {
@@ -88,7 +142,7 @@ _ACTIVE = (MeetingStatus.PENDING, MeetingStatus.RECORDING,
 def watch_progress(meeting_id: str, shown_status: MeetingStatus) -> None:
     """Relê o status a cada 5 s. A cada mudança recarrega a página inteira,
     para a barra lateral e o conteúdo acompanharem."""
-    current = container.repository.find_by_id(meeting_id)
+    current = container.meeting_for(meeting_id, OWNER)
     if current is None:
         return
     if current.status != shown_status:
@@ -100,7 +154,7 @@ def watch_progress(meeting_id: str, shown_status: MeetingStatus) -> None:
 @st.fragment(run_every="5s")
 def active_meetings_panel() -> None:
     """Reuniões em andamento, visíveis mesmo sem nenhuma reunião aberta."""
-    active = [m for m in container.repository.list_all() if m.status in _ACTIVE]
+    active = [m for m in my_meetings() if m.status in _ACTIVE]
     snapshot = [(m.id, m.status) for m in active]
     if st.session_state.get("_active_snapshot", snapshot) != snapshot:
         st.session_state._active_snapshot = snapshot
@@ -158,6 +212,13 @@ with st.sidebar:
     st.title("🎤 Meet Agent")
     badge = "Solo" if settings.is_solo else "Colaborativo"
     st.caption(f"Modo: **{badge}**")
+    if st.session_state.user:
+        st.caption(f"👤 {st.session_state.user.name}")
+        if st.button("Sair", use_container_width=True):
+            container.auth.logout(st.session_state.token)
+            st.session_state.token, st.session_state.user, st.session_state.meeting = "", None, None
+            st.query_params.clear()
+            st.rerun()
     st.divider()
 
     page_label = st.radio(
@@ -176,7 +237,7 @@ with st.sidebar:
             st.rerun()
 
         try:
-            all_meetings = container.repository.list_all()
+            all_meetings = my_meetings()
         except Exception as e:
             st.error(f"Erro ao carregar reuniões: {str(e)}")
             all_meetings = []
@@ -243,8 +304,9 @@ if st.session_state.page == "meetings":
             with col_form:
                 st.markdown("### 🤖 Enviar bot")
                 meet_url = st.text_input(
-                    "Link do Google Meet",
+                    "Link da reunião",
                     placeholder="https://meet.google.com/xxx-yyyy-zzz",
+                    help="Google Meet. Teams e Zoom são aceitos, mas ainda não foram validados em reunião real.",
                 )
                 meeting_title = st.text_input(
                     "Título da reunião",
@@ -259,11 +321,11 @@ if st.session_state.page == "meetings":
                     use_container_width=True,
                 ):
                     try:
-                        new_id = container.dispatch_bot(meet_url.strip(), meeting_title)
+                        new_id = container.dispatch_bot(meet_url.strip(), meeting_title, owner_id=OWNER or "")
                     except ValueError as e:
                         st.error(str(e))
                     else:
-                        select_meeting(container.repository.find_by_id(new_id))
+                        select_meeting(container.meeting_for(new_id, OWNER))
                         st.rerun()
 
             with col_status:
@@ -296,7 +358,7 @@ if st.session_state.page == "meetings":
             if meeting.audio_path and Path(meeting.audio_path).exists():
                 if st.button("🔁 Reprocessar áudio gravado"):
                     container.enqueue_processing(meeting.id, meeting.audio_path, meeting.title)
-                    select_meeting(container.repository.find_by_id(meeting.id))
+                    select_meeting(container.meeting_for(meeting.id, OWNER))
                     st.rerun()
         elif meeting.status != MeetingStatus.DONE:
             watch_progress(meeting.id, meeting.status)
@@ -370,7 +432,7 @@ elif st.session_state.page == "chat":
     st.caption("Ollama · PromptBuilder · LangChain")
 
     try:
-        meetings = container.repository.list_all()
+        meetings = my_meetings()
     except Exception as e:
         st.error(f"Erro ao carregar reuniões: {str(e)}")
         meetings = []

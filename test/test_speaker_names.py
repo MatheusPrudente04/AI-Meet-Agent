@@ -199,3 +199,16 @@ def test_tracker_registra_fala_so_quando_o_texto_muda(tmp_path):
     assert [e["on"] for e in events if e["type"] == "captions"] == [False, True]
     assert [e["name"] for e in events if e["type"] == "self"] == ["bot meet"]
     assert [e["names"] for e in events if e["type"] == "participants"] == [["Ana", "Bruno"], ["Ana", "Bruno", "Carla"]]
+
+
+def test_fumaca_acusa_o_que_faltou(tmp_path):
+    from infrastructure.recorder.run_bot import smoke_checks
+
+    audio = tmp_path / "s.webm"
+    assert not any(ok for _, ok in smoke_checks(audio))
+
+    audio.write_bytes(b"x")
+    (tmp_path / "s.speakers.jsonl").write_text(
+        '{"type": "captions", "on": true}\n{"type": "participants", "names": ["Ana"]}\n', encoding="utf-8"
+    )
+    assert [ok for _, ok in smoke_checks(audio)] == [True, True, True, False]

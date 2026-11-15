@@ -1,26 +1,55 @@
-"""
-api/main.py — FastAPI.
-
-  POST /meetings/upload        → recebe áudio e despacha o processamento
-  GET  /meetings               → lista reuniões com status
-  GET  /meetings/{id}/status   → status, erro e resumo da reunião
-  POST /meetings/{id}/chat     → pergunta sobre a reunião
-  POST /capture/chunk|finalize → chunks de áudio enviados pela extensão do bot
-"""
+"""api/main.py — FastAPI. A especificação da API está em /docs (Swagger) e em
+docs/api/openapi.json (gerada por `python -m api.export_openapi`)."""
 from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from api import chat
-from api.routers import capture, meetings
-from api.security import require_api_key
+from api.routers import auth, capture, meetings
+from api.routers.meetings import AUDIO_SUFFIXES
+from api.schemas.meeting import ConfigResponse, PlatformSchema
+from api.security import current_principal
 from config.logging_setup import setup_logging
 from config.settings import get_settings
+from infrastructure.recorder.platforms import PLATFORMS
 from presentation.container import get_container
 
 setup_logging()
 settings = get_settings()
 
-app = FastAPI(title="Meet Agent API", version="1.0.0")
+DESCRIPTION = """
+API do Meet Agent: o bot entra na reunião, grava, transcreve, resume e responde perguntas.
+
+## Autenticação
+
+1. `POST /auth/register` ou `POST /auth/login` devolve um `token`.
+2. Envie `Authorization: Bearer <token>` nas rotas de **meetings** e **chat**.
+3. Cada usuário enxerga só as próprias reuniões; a reunião de outro usuário responde 404.
+
+Integrações sem usuário podem usar a chave de serviço no cabeçalho `X-API-Key`.
+
+## Fluxo de uma reunião
+
+1. `POST /meetings/bot` (link) ou `POST /meetings/upload` (áudio) devolve o `meeting_id`.
+2. Consulte `GET /meetings/{id}/status` a cada 5 s: `pending` → `recording` →
+   `transcribing` → `summarizing` → `done` (ou `error`, com o motivo em `error`).
+3. Com `done`, `GET /meetings/{id}` traz resumo, tarefas, transcrição e conversa.
+4. `POST /meetings/{id}/chat` responde perguntas sobre a reunião.
+
+## Erros
+
+Toda resposta de erro tem o formato `{"detail": "mensagem"}` (ou a lista de validação do
+FastAPI em 422). `401` = credencial ausente, inválida ou sessão expirada: refaça o login.
+"""
+
+TAGS = [
+    {"name": "auth", "description": "Cadastro, login e sessão do usuário."},
+    {"name": "meetings", "description": "Reuniões: criar (bot ou upload), acompanhar, ler, apagar."},
+    {"name": "chat", "description": "Perguntas sobre uma reunião já transcrita."},
+    {"name": "sistema", "description": "Configuração para o front e verificação de saúde. Sem autenticação."},
+    {"name": "capture", "description": "Uso interno do bot (áudio em chunks). O front não chama."},
+]
+
+app = FastAPI(title="Meet Agent API", version="2.0.0", description=DESCRIPTION, openapi_tags=TAGS)
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,14 +59,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_auth = [Depends(require_api_key)]
+_auth = [Depends(current_principal)]
+app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(meetings.router, prefix="/meetings", tags=["meetings"], dependencies=_auth)
 app.include_router(chat.router, prefix="/meetings", tags=["chat"], dependencies=_auth)
 # /capture/* tem autenticação própria: token por sessão (api/security.py).
 app.include_router(capture.router, prefix="/capture", tags=["capture"])
 
 
-@app.get("/health")
+@app.get("/config", response_model=ConfigResponse, tags=["sistema"], summary="O que está ligado nesta instalação")
+def config():
+    """O front lê uma vez na partida para montar as telas (cadastro aberto? e-mail ligado? quais plataformas?)."""
+    s = get_settings()
+    return ConfigResponse(
+        login_enabled=s.is_collab,
+        registration_open=s.is_collab and s.allow_registration,
+        email_enabled=s.email_enabled,
+        calendar_enabled=s.enable_calendar,
+        max_upload_mb=s.max_upload_mb,
+        audio_formats=sorted(AUDIO_SUFFIXES),
+        platforms=[
+            PlatformSchema(key=p.key, label=p.label, example=p.example,
+                           validated=p.validated, speaker_names=p.speaker_names)
+            for p in PLATFORMS if not p.unsupported
+        ],
+    )
+
+
+@app.get("/health", tags=["sistema"], summary="Saúde do banco e da fila")
 def health(response: Response):
     """Confere as dependências de verdade: 503 se o banco ou a fila não respondem."""
     checks = {}

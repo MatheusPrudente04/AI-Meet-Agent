@@ -81,6 +81,10 @@ class Summary:
 class Meeting:
     id: str
     title: str
+    # Dono da reunião (id do usuário). Vazio = anterior ao login multiusuário (ADR-011).
+    owner_id: str = ""
+    # Plataforma de origem ("meet", "teams", "zoom"); vazio para áudio enviado.
+    platform: str = ""
     started_at: datetime = field(default_factory=datetime.now)
     audio_path: Optional[str] = None
     transcript_text: str = ""

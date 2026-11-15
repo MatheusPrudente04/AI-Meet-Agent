@@ -1,5 +1,7 @@
 """
-playwright_bot_recorder.py — Bot Playwright para gravar reuniões do Google Meet.
+playwright_bot_recorder.py — Bot Playwright que grava reuniões (Meet, Teams, Zoom).
+
+O fluxo do Meet vive aqui; o das outras plataformas, em platforms.py (ADR-012).
 
 Usa a extensão Chrome (tabCapture MV3) para capturar o áudio da aba diretamente,
 sem interceptar WebRTC. A extensão envia chunks via POST para /capture/chunk e
@@ -20,6 +22,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from playwright.async_api import BrowserContext, Page, Worker, async_playwright
+
+from infrastructure.recorder.platforms import PLATFORMS, detect_platform
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +169,7 @@ class PlaywrightBotRecorder:
         self._context: Optional[BrowserContext] = None
         self._shutdown_event = asyncio.Event()
         self.session: Optional[BotSession] = None
+        self._platform = PLATFORMS[0]  # Meet, até join_async ler o link
 
     def request_stop(self) -> None:
         """Solicita encerramento gracioso (chamado por SIGINT/SIGTERM)."""
@@ -183,6 +188,9 @@ class PlaywrightBotRecorder:
         """
         session_id = session_id or str(uuid.uuid4())
         self.session = BotSession(id=session_id, meeting_url=meeting_url)
+        self._platform = platform = detect_platform(meeting_url)
+        if not platform.validated:
+            logger.warning("%s ainda não foi validado em reunião real (ADR-012)", platform.label)
 
         ext_dir = Path(__file__).parent / "extension"
 
@@ -212,21 +220,28 @@ class PlaywrightBotRecorder:
             self._context = context
 
             page = await context.new_page()
-            await page.goto(meeting_url, wait_until="domcontentloaded", timeout=30_000)
+            await page.goto(platform.join_url(meeting_url), wait_until="domcontentloaded", timeout=30_000)
 
-            await self._verify_login(page)
-            await self._dismiss_device_dialogs(page)
-            await self._mute_devices(page)
-            await self._click_join_button(page)
-            await self._wait_until_admitted(page)
-            await self._mute_devices(page)
+            if platform.enter is None:  # Meet
+                await self._verify_login(page)
+                await self._dismiss_device_dialogs(page)
+                await self._mute_devices(page)
+                await self._click_join_button(page)
+                await self._wait_until_admitted(page)
+                await self._mute_devices(page)
+            else:
+                await platform.enter(page, self._bot_name)
+                await self._wait_until_admitted(page)
+                if platform.after_admitted and not self._shutdown_event.is_set():
+                    await platform.after_admitted(page)
 
             if self._shutdown_event.is_set():
                 await context.close()
                 return self.session
 
-            logger.info("Admitido — ativando legendas")
-            await self._enable_captions(page)
+            if platform.speaker_names:
+                logger.info("Admitido — ativando legendas")
+                await self._enable_captions(page)
 
             logger.info("Localizando service worker da extensão")
             self._ext_sw = await self._find_ext_sw(context)
@@ -234,11 +249,12 @@ class PlaywrightBotRecorder:
             if self._on_recording_started:
                 self._on_recording_started()
 
-            tracker = asyncio.create_task(self._track_speakers(page, started_ms))
+            tracker = asyncio.create_task(self._track_speakers(page, started_ms)) if platform.speaker_names else None
             try:
                 await self._wait_until_meeting_ends(page)
             finally:
-                tracker.cancel()
+                if tracker:
+                    tracker.cancel()
 
             await self._stop_extension_capture(page)
             await asyncio.sleep(2)  # dá tempo ao offscreen de fazer POST /finalize
@@ -341,6 +357,21 @@ class PlaywrightBotRecorder:
             "ou a tela do Meet mudou."
         )
 
+    async def _read_status(self, page: Page) -> dict:
+        """Estado da chamada: {left, participantCount, leaveVisible, inCall}."""
+        if not self._platform.status_js:
+            return await page.evaluate(self.MEET_STATUS_JS)
+        # Fora do Meet o cliente pode estar dentro de um iframe: vale o frame que mostra a chamada.
+        status: dict = {}
+        for frame in page.frames:
+            try:
+                status = await frame.evaluate(self._platform.status_js)
+            except Exception:
+                continue
+            if status.get("leaveVisible"):
+                break
+        return status
+
     async def _wait_until_admitted(self, page: Page, timeout: float = 120.0) -> None:
         """Aguarda o bot estar dentro da chamada, e não só na sala de espera."""
         deadline = time.monotonic() + timeout
@@ -349,7 +380,7 @@ class PlaywrightBotRecorder:
             if self._shutdown_event.is_set():
                 return
             try:
-                status = await page.evaluate(self.MEET_STATUS_JS)
+                status = await self._read_status(page)
                 if status.get("inCall"):
                     logger.info("Admitido na reunião")
                     return
@@ -572,7 +603,7 @@ class PlaywrightBotRecorder:
 
     async def _leave_btn_visible(self, page: Page) -> bool:
         try:
-            status = await page.evaluate(self.MEET_STATUS_JS)
+            status = await self._read_status(page)
             return bool(status.get("leaveVisible", False))
         except Exception:
             return False
@@ -600,7 +631,7 @@ class PlaywrightBotRecorder:
                 logger.info("Página fechada — reunião encerrada")
                 break
             try:
-                status = await page.evaluate(self.MEET_STATUS_JS)
+                status = await self._read_status(page)
             except Exception as exc:
                 logger.debug("Erro ao avaliar status: %s", exc)
                 continue

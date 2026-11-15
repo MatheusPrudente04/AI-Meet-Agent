@@ -35,8 +35,11 @@ async function startCapture({ tabId, session, endpoint, chunkMs, token }) {
 
   let targetTabId = tabId;
   if (!targetTabId) {
-    const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
-    if (!tabs.length) throw new Error('Nenhuma aba do Google Meet encontrada');
+    const tabs = await chrome.tabs.query({ url: [
+      'https://meet.google.com/*', 'https://teams.microsoft.com/*',
+      'https://teams.live.com/*', 'https://*.zoom.us/*',
+    ] });
+    if (!tabs.length) throw new Error('Nenhuma aba de reunião encontrada');
     targetTabId = tabs[0].id;
   }
 

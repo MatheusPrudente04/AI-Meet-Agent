@@ -18,6 +18,9 @@ Uma ADR só vira código depois de aceita. Ao aceitar, troque o status e a data 
 | 008 | Runtime e dependências travadas | Aceita, implementada em 2026-11-15 (venv local segue em 3.14) | 3 | Sim |
 | 009 | Legendas e identificação de falantes | Implementada (fase 2 em 2026-11-15) | 2B | Sim |
 | 010 | Contexto do LLM em reuniões longas | Aceita, implementada em 2026-11-15 | 4 | Sim |
+| 011 | Login de usuários e sessões no MongoDB | Aceita, implementada em 2026-11-15 | 5 | Com migração |
+| 012 | Bot multiplataforma (Meet, Teams, Zoom; Discord adiado) | Aceita; Meet validado, Teams e Zoom não | 5 | Sim |
+| 013 | Contrato OpenAPI para um novo front | Aceita, implementada em 2026-11-15 | 5 | Sim |
 
 ### Desvios na implementação da Sprint 1
 
@@ -331,3 +334,113 @@ tarefa citada em duas partes pode aparecer duas vezes. O chat de reunião longa 
 resposta que dependa de sinônimo.
 
 **Reverte-se assim.** `LLM_CONTEXT_CHARS` alto desliga a divisão para modelos de janela grande.
+
+---
+
+## ADR-011 — Login de usuários e sessões no MongoDB
+
+**Contexto.** A ADR-007 deixou uma chave compartilhada, que não identifica quem chama, e
+registrou o gatilho: mais de uma pessoa usando. O dono do produto pediu cadastro, login
+multiusuário e as sessões guardadas no MongoDB.
+
+**Decisão.**
+- **Usuário:** coleção `users` (`name`, `email` único em minúsculas, `password_hash`). A senha é
+  guardada como scrypt (biblioteca padrão) com sal por usuário, mínimo de 8 caracteres.
+- **Sessão:** token aleatório de 256 bits entregue ao cliente; a coleção `sessions` guarda só o
+  SHA-256 dele, com `user_id`, `created_at`, `expires_at`, `user_agent` e `ip`. Um índice TTL em
+  `expires_at` apaga as vencidas. Validade: `SESSION_DAYS` (30). Logout apaga a sessão.
+- **Dono da reunião:** `Meeting.owner_id`. Cada usuário lista e abre só as próprias reuniões; a
+  de outro responde 404 (não 403), para não revelar que existe.
+- **Reuniões anteriores ao login:** a primeira conta cadastrada herda todas.
+- **Credenciais da API:** `Authorization: Bearer <token>` (usuário) ou `X-API-Key` (chave de
+  serviço, enxerga tudo). `/capture/*` segue com o token por reunião da ADR-007.
+- **Interface:** o Streamlit ganhou a tela de entrar e criar conta, e filtra tudo pelo usuário.
+- **Solo não tem login** (ADR-004: é modo de desenvolvimento).
+
+**Alternativas descartadas.**
+- JWT sem estado: não dá para encerrar uma sessão antes do prazo, e o pedido era guardá-las no banco.
+- bcrypt/argon2: dependência nova para o que o scrypt da biblioteca padrão já entrega.
+- Provedor externo (Google, Auth0): a implantação é local e sem domínio público.
+
+**Trade-off aceito.**
+- Não há limite de tentativas de login nem confirmação de e-mail. Aceitável com a API só na
+  máquina local; **obrigatório resolver antes de expor na internet**, junto com HTTPS.
+- Não há recuperação de senha (depende do e-mail com SMTP real, previsto para a Sprint 6).
+- No Streamlit o login vive na sessão do navegador: atualizar a página (F5) pede login de novo.
+- `ALLOW_REGISTRATION=true` deixa qualquer pessoa com acesso à porta criar conta; feche com
+  `false` depois de cadastrar quem deve entrar.
+
+**Verificado.** Testes cobrem cadastro, login, logout, sessão vencida, isolamento entre dois
+usuários em todas as rotas e herança das reuniões antigas. Contra o MongoDB do compose (banco
+de rascunho): e-mail duplicado recusado pelo índice único, índice TTL criado, sessão guardada
+como hash. **Não verificado:** a tela de login do Streamlit com uma conta real criada pelo dono.
+
+**Reverte-se assim.** Sem `Bearer`, a chave de serviço continua abrindo tudo; `owner_id` é um
+campo a mais no documento.
+
+---
+
+## ADR-012 — Bot multiplataforma
+
+**Contexto.** O bot só abria links do Google Meet. O pedido é gravar também Teams, Zoom e Discord.
+
+**Decisão.**
+- A captura não muda: é o áudio da aba, pela mesma extensão (agora autorizada nos domínios do
+  Teams e do Zoom). O que varia por plataforma fica em `infrastructure/recorder/platforms.py`:
+  endereço que abre a reunião no navegador, passos até entrar e como ler o estado da chamada.
+- O link é validado no despacho (`detect_platform`): https e domínio de uma plataforma conhecida.
+- **Meet:** fluxo existente, inalterado. Única plataforma com nome de quem fala (legendas).
+- **Teams e Zoom:** o bot entra como convidado pelo cliente web, com o nome `BOT_NAME`, microfone
+  e câmera desligados. O link do Zoom é convertido para o cliente web (`app.zoom.us/wc/<id>/join`).
+  A transcrição sai com "Speaker N".
+- **Discord: adiado.** Automatizar uma conta de usuário pelo navegador viola os termos do Discord
+  e arrisca banir a conta. O caminho correto é um bot oficial (token do Developer Portal) que
+  entra no canal de voz e recebe o áudio, sem navegador: outra arquitetura de captura, que
+  precisa do token e de um servidor de teste. O link do Discord é recusado com essa explicação.
+
+**Estado (2026-11-15), sem rodeio.**
+- Meet: validado em reunião real, de novo depois desta mudança (teste de fumaça).
+- Zoom: confirmado só que o endereço do cliente web existe e redireciona como esperado. Os
+  passos de entrada (nome, termos de uso, "áudio do computador") **nunca rodaram numa reunião**.
+- Teams: **nada foi executado contra o Teams**; os seletores vêm da tela conhecida do cliente web.
+- Nos dois, o primeiro uso deve ser `run_bot --url <link> --smoke 30` com `BOT_DEBUG_DOM=true`.
+  O bot avisa no log que a plataforma não foi validada, e `GET /config` informa `validated: false`.
+
+**Riscos conhecidos fora do Meet.**
+- Sem contagem de participantes confiável, o bot não sai sozinho quando fica só: sai quando a
+  reunião é encerrada ou a aba para de produzir áudio (`SILENCE_TIMEOUT`).
+- O Zoom exige aceitar os termos de uso a cada navegador novo; o bot aceita para conseguir entrar.
+- Reuniões que exigem conta logada (política da organização) não aceitam o bot como convidado.
+- Se o botão de mudo mudar, o bot pode entrar com o microfone aberto: conferir no teste de fumaça.
+
+**Alternativas descartadas.**
+- APIs oficiais de gravação (Graph, Zoom Cloud Recording): exigem conta paga e consentimento de
+  administrador de cada organização; o bot convidado funciona com qualquer link.
+- Um recorder por plataforma: duplicaria captura, admissão e fim de reunião, que são iguais.
+
+**Reverte-se assim.** Remover a entrada da plataforma em `PLATFORMS` volta a recusar o link.
+
+---
+
+## ADR-013 — Contrato OpenAPI para um novo front
+
+**Contexto.** O Streamlit chama o container direto, sem passar pela API. Um front novo precisa
+de uma API completa e documentada antes de ser escrito.
+
+**Decisão.**
+- O contrato é o OpenAPI gerado pelo FastAPI: Swagger em `/docs`, arquivo versionado em
+  `docs/api/openapi.json` (gerado por `python -m api.export_openapi`, dentro do container).
+- A API passou a cobrir tudo o que o Streamlit faz: cadastro e sessão (`/auth/*`), detalhe
+  completo da reunião com transcrição e conversa (`GET /meetings/{id}`), exclusão
+  (`DELETE /meetings/{id}`) e `GET /config` (cadastro aberto? e-mail ligado? quais plataformas?).
+- Toda rota tem resumo, modelos de resposta e erros documentados; os esquemas de segurança
+  (`Bearer` e `X-API-Key`) aparecem no botão Authorize do Swagger.
+- Um teste falha se as rotas ou os modelos do arquivo divergirem do código.
+
+**Fora do escopo, de propósito.** Nenhum front novo foi escrito e o Streamlit não foi migrado
+para a API. Paginação da lista e atualização por push (WebSocket/SSE) ficam para quando o
+front precisar: hoje o acompanhamento é consulta periódica a `/status`.
+
+**Antes de um front em outro domínio:** incluir a origem dele em `ALLOWED_ORIGINS`.
+
+**Reverte-se assim.** As rotas novas são aditivas.

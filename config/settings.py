@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     allowed_origins: list[str] = Field(default=["http://localhost:8501"])
     # Chave exigida no cabeçalho X-API-Key (ADR-007). Obrigatória em collab.
     api_key: str = ""
+    # Login de usuários (ADR-011)
+    session_days: int = 30
+    allow_registration: bool = True
     max_upload_mb: int = 500
     capture_max_chunk_mb: int = 10
     capture_max_session_mb: int = 1024

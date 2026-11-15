@@ -14,9 +14,11 @@ import threading
 import uuid
 from datetime import datetime
 from functools import lru_cache
+from typing import Optional
 
 from config.settings import get_settings
 from domain.entities.meeting import Meeting
+from domain.entities.user import User
 from infrastructure.llm.langchain_llm_service import LangChainLLMService
 from use_cases.chat_with_meeting import ChatWithMeetingUC
 from use_cases.process_meeting import ProcessMeetingInput, ProcessMeetingUC
@@ -60,6 +62,16 @@ class Container:
             from infrastructure.calendar.google_calendar_service import GoogleCalendarService
             self.calendar = GoogleCalendarService(settings.google_credentials_path, settings.google_token_path)
         self.repository = _build_repository(settings)
+        # Login de usuários (ADR-011): só em collab. Em solo não há login.
+        self.auth = None
+        if settings.is_collab:
+            from infrastructure.auth_store import MongoAuthStore
+            from use_cases.auth import AuthService
+            self.auth = AuthService(
+                MongoAuthStore(settings.mongo_uri, settings.mongo_db),
+                session_days=settings.session_days,
+                allow_registration=settings.allow_registration,
+            )
         self.transcribe_meeting = TranscribeMeetingUC(_build_transcriber(settings))
         self.summarize_meeting = SummarizeMeetingUC(llm, max_context_chars=settings.llm_context_chars)
         self.chat_with_meeting = ChatWithMeetingUC(
@@ -71,14 +83,32 @@ class Container:
             load_speaker_events=lambda audio: load_speaker_events(audio, exclude=(settings.bot_name, "Você", "You")),
         )
 
-    def enqueue_processing(self, meeting_id: str, audio_path: str, title: str, wait: bool = False) -> None:
+    def register_user(self, name: str, email: str, password: str) -> User:
+        """Cadastra. O primeiro usuário herda as reuniões gravadas antes de existir login."""
+        user = self.auth.register(name, email, password)
+        if self.auth.is_first_user():
+            for meeting in self.repository.list_all(owner_id=""):
+                meeting.owner_id = user.id
+                self.repository.save(meeting)
+        return user
+
+    def meeting_for(self, meeting_id: str, owner_id: Optional[str]) -> Optional[Meeting]:
+        """A reunião, se existir e for de `owner_id` (None = sem restrição de dono)."""
+        meeting = self.repository.find_by_id(meeting_id)
+        if meeting is None or (owner_id is not None and meeting.owner_id != owner_id):
+            return None
+        return meeting
+
+    def enqueue_processing(
+        self, meeting_id: str, audio_path: str, title: str, wait: bool = False, owner_id: str = "",
+    ) -> None:
         """Registra a reunião como pendente e despacha o processamento.
 
         wait=True é para processos que encerram logo em seguida (CLI, run_bot):
         em solo roda na própria chamada, porque uma thread não sobrevive ao fim
         do interpretador. Em collab é ignorado — a fila é quem executa.
         """
-        meeting = self.repository.find_by_id(meeting_id) or Meeting(id=meeting_id, title=title)
+        meeting = self.repository.find_by_id(meeting_id) or Meeting(id=meeting_id, title=title, owner_id=owner_id)
         meeting.audio_path = audio_path
         self.repository.save(meeting)
 
@@ -97,9 +127,9 @@ class Container:
             ).start()
 
 
-    def set_task_done(self, meeting_id: str, index: int, done: bool) -> Meeting:
+    def set_task_done(self, meeting_id: str, index: int, done: bool, owner_id: Optional[str] = None) -> Meeting:
         """Marca ou desmarca uma tarefa da reunião e grava."""
-        meeting = self.repository.find_by_id(meeting_id)
+        meeting = self.meeting_for(meeting_id, owner_id)
         if meeting is None:
             raise LookupError("Reunião não encontrada")
         tasks = meeting.summary.tasks if meeting.summary else []
@@ -119,16 +149,16 @@ class Container:
             logger.warning("Agenda indisponível: %s", exc)
             return ""
 
-    def dispatch_bot(self, meeting_url: str, title: str = "") -> str:
+    def dispatch_bot(self, meeting_url: str, title: str = "", owner_id: str = "") -> str:
         """Manda o bot para a reunião sem bloquear. Retorna o id da reunião.
         Sem título, usa o do evento na agenda (se ligada) ou a data."""
-        if not meeting_url.startswith("https://meet.google.com/"):
-            raise ValueError("Informe um link do Google Meet (https://meet.google.com/...).")
+        from infrastructure.recorder.platforms import detect_platform
+        platform = detect_platform(meeting_url)  # ValueError com mensagem para o usuário
         title = (title or "").strip() or self._title_from_calendar(meeting_url) \
             or f"Reunião {datetime.now():%d/%m/%Y %H:%M}"
 
         meeting_id = str(uuid.uuid4())
-        self.repository.save(Meeting(id=meeting_id, title=title))
+        self.repository.save(Meeting(id=meeting_id, title=title, owner_id=owner_id, platform=platform.key))
 
         if self._is_collab:
             from worker.tasks import join_meeting_task
