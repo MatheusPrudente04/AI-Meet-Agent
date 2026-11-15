@@ -34,5 +34,8 @@ class JsonMeetingRepository(IMeetingRepository):
             meetings = [m for m in meetings if m.owner_id == owner_id]
         return sorted(meetings, key=lambda m: m.started_at, reverse=True)
 
+    def find_by(self, **fields) -> list[Meeting]:
+        return [m for m in self.list_all() if all(getattr(m, k) == v for k, v in fields.items())]
+
     def delete(self, meeting_id: str) -> None:
         (self._base / f"{meeting_id}.json").unlink(missing_ok=True)

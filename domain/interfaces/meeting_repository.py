@@ -26,6 +26,11 @@ class IMeetingRepository(ABC):
         """Reuniões organizadas por data. Com `owner_id`, só as daquele usuário."""
         ...
 
+    @abstractmethod
+    def find_by(self, **fields) -> list[Meeting]:
+        """Reuniões cujos campos são iguais aos informados (ex.: source_id="...")."""
+        ...
+
     # Metodo de deletar reunião por ID, removendo a reunnião do armazenamento persistente
     @abstractmethod
     def delete(self, meeting_id: str) -> None:

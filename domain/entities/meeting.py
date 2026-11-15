@@ -85,6 +85,11 @@ class Meeting:
     owner_id: str = ""
     # Plataforma de origem ("meet", "teams", "zoom"); vazio para áudio enviado.
     platform: str = ""
+    # Link normalizado da reunião (bot); identifica "a mesma reunião" entre usuários.
+    meeting_url: str = ""
+    # Outro usuário já mandou o bot a este link: esta reunião espera a gravação dele
+    # e recebe uma cópia do resultado (ADR-011). Vazio depois de copiada.
+    source_id: str = ""
     started_at: datetime = field(default_factory=datetime.now)
     audio_path: Optional[str] = None
     transcript_text: str = ""

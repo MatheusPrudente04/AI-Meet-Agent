@@ -14,10 +14,11 @@ import threading
 import uuid
 from datetime import datetime
 from functools import lru_cache
+from pathlib import Path
 from typing import Optional
 
 from config.settings import get_settings
-from domain.entities.meeting import Meeting
+from domain.entities.meeting import Meeting, MeetingStatus
 from domain.entities.user import User
 from infrastructure.llm.langchain_llm_service import LangChainLLMService
 from use_cases.chat_with_meeting import ChatWithMeetingUC
@@ -26,6 +27,20 @@ from use_cases.summarize_meeting import SummarizeMeetingUC
 from use_cases.transcribe_meeting import TranscribeMeetingUC
 
 logger = logging.getLogger(__name__)
+
+_ACTIVE = (MeetingStatus.PENDING, MeetingStatus.RECORDING, MeetingStatus.TRANSCRIBING, MeetingStatus.SUMMARIZING)
+_FINAL = (MeetingStatus.DONE, MeetingStatus.ERROR)
+# O que a reunião de quem chegou depois copia da gravação de quem mandou o bot primeiro.
+_SHARED = ("status", "error", "started_at", "audio_path", "transcript_text", "transcript_formatted",
+           "transcript_raw", "summary", "participants", "duration_minutes", "metrics")
+
+
+class MeetingInProgress(Exception):
+    """O usuário já mandou o bot a este link e a reunião ainda não acabou."""
+
+    def __init__(self, meeting_id: str) -> None:
+        super().__init__("O bot já está a caminho desta reunião ou gravando. Acompanhe a reunião já criada.")
+        self.meeting_id = meeting_id
 
 
 def _build_transcriber(settings):
@@ -72,6 +87,10 @@ class Container:
                 session_days=settings.session_days,
                 allow_registration=settings.allow_registration,
             )
+            try:
+                self.auth.ensure_admin()
+            except Exception as exc:  # banco fora na partida: tenta de novo na próxima
+                logger.warning("Não foi possível conferir o admin: %s", exc)
         self.transcribe_meeting = TranscribeMeetingUC(_build_transcriber(settings))
         self.summarize_meeting = SummarizeMeetingUC(llm, max_context_chars=settings.llm_context_chars)
         self.chat_with_meeting = ChatWithMeetingUC(
@@ -92,12 +111,60 @@ class Container:
                 self.repository.save(meeting)
         return user
 
+    def send_password_reset(self, email: str) -> None:
+        """Envia o código de nova senha. Não diz se o e-mail tem conta.
+        RuntimeError se o SMTP não estiver configurado."""
+        from infrastructure.email.email_sender import EmailSender
+        from use_cases.auth import RESET_MINUTES
+        if not get_settings().email_enabled:
+            raise RuntimeError("Recuperação de senha indisponível: o e-mail (SMTP) não está configurado.")
+        result = self.auth.request_reset(email)
+        if result:
+            user, code = result
+            EmailSender().send_password_reset(user.email, user.name, code, RESET_MINUTES)
+
     def meeting_for(self, meeting_id: str, owner_id: Optional[str]) -> Optional[Meeting]:
         """A reunião, se existir e for de `owner_id` (None = sem restrição de dono)."""
         meeting = self.repository.find_by_id(meeting_id)
         if meeting is None or (owner_id is not None and meeting.owner_id != owner_id):
             return None
+        return self._follow(meeting)
+
+    def meetings_of(self, owner_id: Optional[str]) -> list[Meeting]:
+        return [self._follow(m) for m in self.repository.list_all(owner_id)]
+
+    def _follow(self, meeting: Meeting) -> Meeting:
+        """Reunião que espera a gravação de outro usuário: acompanha o status dela e,
+        quando ela termina, recebe uma cópia própria do resultado (chat e tarefas à parte)."""
+        if not meeting.source_id:
+            return meeting
+        source = self.repository.find_by_id(meeting.source_id)
+        if source is None:
+            meeting.status = MeetingStatus.ERROR
+            meeting.error = "A gravação foi apagada antes de ficar pronta."
+            meeting.source_id = ""
+        else:
+            before = [getattr(meeting, f) for f in _SHARED]
+            for f in _SHARED:
+                setattr(meeting, f, getattr(source, f))
+            if source.status in _FINAL:
+                meeting.source_id = ""  # a partir daqui a reunião é independente
+            elif [getattr(meeting, f) for f in _SHARED] == before:
+                return meeting
+        self.repository.save(meeting)
         return meeting
+
+    def delete_meeting(self, meeting: Meeting) -> None:
+        """Apaga a reunião. A gravação fica se outra reunião ainda usa o mesmo áudio."""
+        if meeting.status in _ACTIVE:
+            raise MeetingInProgress(meeting.id)
+        for follower in self.repository.find_by(source_id=meeting.id):
+            self._follow(follower)  # copia o resultado antes de a fonte sumir
+        self.repository.delete(meeting.id)
+        if meeting.audio_path and not self.repository.find_by(audio_path=meeting.audio_path):
+            audio = Path(meeting.audio_path)  # com a gravação, os arquivos auxiliares (.speakers.jsonl…)
+            for f in audio.parent.glob(f"{audio.name.split('.')[0]}.*"):
+                f.unlink(missing_ok=True)
 
     def enqueue_processing(
         self, meeting_id: str, audio_path: str, title: str, wait: bool = False, owner_id: str = "",
@@ -152,13 +219,28 @@ class Container:
     def dispatch_bot(self, meeting_url: str, title: str = "", owner_id: str = "") -> str:
         """Manda o bot para a reunião sem bloquear. Retorna o id da reunião.
         Sem título, usa o do evento na agenda (se ligada) ou a data."""
-        from infrastructure.recorder.platforms import detect_platform
+        from infrastructure.recorder.platforms import detect_platform, meeting_key
         platform = detect_platform(meeting_url)  # ValueError com mensagem para o usuário
+        key = meeting_key(meeting_url)
         title = (title or "").strip() or self._title_from_calendar(meeting_url) \
             or f"Reunião {datetime.now():%d/%m/%Y %H:%M}"
 
-        meeting_id = str(uuid.uuid4())
-        self.repository.save(Meeting(id=meeting_id, title=title, owner_id=owner_id, platform=platform.key))
+        # Mesma reunião já com o bot a caminho ou gravando: não manda um segundo bot.
+        # ponytail: dois envios no mesmo instante ainda podem criar dois bots; trava por link se acontecer
+        active = [self._follow(m) for m in self.repository.find_by(meeting_url=key)]
+        active = [m for m in active if m.status in (MeetingStatus.PENDING, MeetingStatus.RECORDING)]
+        mine = next((m for m in active if m.owner_id == owner_id), None)
+        if mine:
+            raise MeetingInProgress(mine.id)
+        meeting = Meeting(id=str(uuid.uuid4()), title=title, owner_id=owner_id,
+                          platform=platform.key, meeting_url=key)
+        source = next((m for m in active if not m.source_id), None)
+        if source:
+            meeting.source_id = source.id
+            self.repository.save(self._follow(meeting))
+            return meeting.id
+        meeting_id = meeting.id
+        self.repository.save(meeting)
 
         if self._is_collab:
             from worker.tasks import join_meeting_task

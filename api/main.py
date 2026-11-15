@@ -24,6 +24,10 @@ API do Meet Agent: o bot entra na reunião, grava, transcreve, resume e responde
 1. `POST /auth/register` ou `POST /auth/login` devolve um `token`.
 2. Envie `Authorization: Bearer <token>` nas rotas de **meetings** e **chat**.
 3. Cada usuário enxerga só as próprias reuniões; a reunião de outro usuário responde 404.
+4. Cinco senhas erradas seguidas bloqueiam o login por 15 minutos (429).
+
+Se dois usuários mandam o bot ao mesmo link, um só bot grava e cada um recebe a própria
+reunião, com chat e tarefas independentes.
 
 Integrações sem usuário podem usar a chave de serviço no cabeçalho `X-API-Key`.
 
@@ -45,6 +49,7 @@ TAGS = [
     {"name": "auth", "description": "Cadastro, login e sessão do usuário."},
     {"name": "meetings", "description": "Reuniões: criar (bot ou upload), acompanhar, ler, apagar."},
     {"name": "chat", "description": "Perguntas sobre uma reunião já transcrita."},
+    {"name": "admin", "description": "Só para administradores (a primeira conta): usuários e limpeza de sessões."},
     {"name": "sistema", "description": "Configuração para o front e verificação de saúde. Sem autenticação."},
     {"name": "capture", "description": "Uso interno do bot (áudio em chunks). O front não chama."},
 ]
@@ -61,6 +66,7 @@ app.add_middleware(
 
 _auth = [Depends(current_principal)]
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
+app.include_router(auth.admin_router, prefix="/admin", tags=["admin"])
 app.include_router(meetings.router, prefix="/meetings", tags=["meetings"], dependencies=_auth)
 app.include_router(chat.router, prefix="/meetings", tags=["chat"], dependencies=_auth)
 # /capture/* tem autenticação própria: token por sessão (api/security.py).

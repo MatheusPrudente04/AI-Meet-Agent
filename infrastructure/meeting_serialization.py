@@ -47,6 +47,8 @@ def meeting_from_dict(data: dict) -> Meeting:
         title=data.get("title", ""),
         owner_id=data.get("owner_id") or "",
         platform=data.get("platform") or "",
+        meeting_url=data.get("meeting_url") or "",
+        source_id=data.get("source_id") or "",
         started_at=_to_datetime(data.get("started_at")),
         audio_path=data.get("audio_path"),
         transcript_text=data.get("transcript_text") or "",

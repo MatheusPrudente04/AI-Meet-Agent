@@ -13,8 +13,14 @@ class MongoMeetingRepository(IMeetingRepository):
     def __init__(self, mongo_uri: str, db_name: str) -> None:
         client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
         self._col = client[db_name]["meetings"]
+        self._indexed = False
 
     def save(self, meeting: Meeting) -> None:
+        if not self._indexed:  # na primeira escrita: a aplicação sobe mesmo com o banco fora
+            self._col.create_index([("owner_id", 1), ("started_at", -1)])
+            self._col.create_index("meeting_url")
+            self._col.create_index("source_id")
+            self._indexed = True
         doc = meeting_to_dict(meeting)
         doc["_id"] = doc.pop("id")
         self._col.replace_one({"_id": meeting.id}, doc, upsert=True)
@@ -28,6 +34,9 @@ class MongoMeetingRepository(IMeetingRepository):
         # "" também casa com documentos antigos, que não têm o campo.
         query = {} if owner_id is None else {"owner_id": owner_id or {"$in": ["", None]}}
         return [meeting_from_dict(d) for d in self._col.find(query).sort("started_at", -1)]
+
+    def find_by(self, **fields) -> list[Meeting]:
+        return [meeting_from_dict(d) for d in self._col.find(fields)]
 
     def delete(self, meeting_id: str) -> None:
         self._col.delete_one({"_id": meeting_id})

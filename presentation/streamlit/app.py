@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import streamlit as st
 from config.settings import get_settings
-from presentation.container import get_container
+from presentation.container import MeetingInProgress, get_container
 from domain.entities.meeting import Meeting, MeetingStatus, Summary
 from use_cases.process_meeting import ProcessMeetingInput
 from use_cases.chat_with_meeting import ChatWithMeetingInput
@@ -46,11 +46,14 @@ _PAGES = {
     "📋 Reuniões": "meetings",
     "💬 Chat Interativo": "chat",
 }
+if settings.is_collab:
+    _PAGES["👤 Minha conta"] = "account"
 
 def _init():
     defaults = {
         "user": None,
         "token": "",
+        "cookie": None,  # token a gravar (ou "" para apagar) no cookie na próxima execução
         "page": "meetings",
         "meeting": None,
         "mode_selected": False,
@@ -62,20 +65,79 @@ def _init():
 _init()
 
 
+COOKIE = "meet_agent_session"
+
+
+def write_cookie() -> None:
+    """Grava ou apaga o cookie da sessão, para o login sobreviver ao F5 (S7-1).
+    Feito numa execução sem st.rerun, senão o script não chega ao navegador."""
+    token = st.session_state.cookie
+    if token is None:
+        return
+    st.session_state.cookie = None
+    max_age = settings.session_days * 86400 if token else 0
+    # ponytail: cookie gravado por JS (sem HttpOnly); com HTTPS na S11, acrescentar Secure
+    st.html(
+        f"<script>document.cookie = '{COOKIE}={token}; Max-Age={max_age}; Path=/; SameSite=Strict';</script>",
+        unsafe_allow_javascript=True,
+    )
+
+
+def start_session(token: str, user) -> None:
+    st.session_state.token, st.session_state.user, st.session_state.cookie = token, user, token
+
+
+def end_session() -> None:
+    st.session_state.token, st.session_state.user, st.session_state.meeting = "", None, None
+    st.session_state.cookie = ""
+    st.query_params.clear()
+
+
+def _client_ip() -> str:
+    try:
+        return st.context.ip_address or ""
+    except Exception:
+        return ""
+
+
 def login_screen() -> None:
-    """Entrar ou criar conta (ADR-011). Só existe em collab; em solo não há usuários."""
+    """Entrar, criar conta ou recuperar a senha (ADR-011). Só em collab."""
     st.title("🎤 Meet Agent")
     from use_cases.auth import MIN_PASSWORD, AuthError
-    tab_login, tab_signup = st.tabs(["Entrar", "Criar conta"])
+    tab_login, tab_signup, tab_forgot = st.tabs(["Entrar", "Criar conta", "Esqueci a senha"])
     with tab_login, st.form("login"):
         email = st.text_input("E-mail")
         password = st.text_input("Senha", type="password")
         if st.form_submit_button("Entrar", type="primary", use_container_width=True):
             try:
-                st.session_state.token, st.session_state.user = container.auth.login(email, password, "streamlit")
+                start_session(*container.auth.login(email, password, "streamlit", _client_ip()))
                 st.rerun()
             except AuthError as e:
                 st.error(str(e))
+    with tab_forgot:
+        if not settings.email_enabled:
+            st.info("Recuperação por e-mail indisponível: peça a quem administra o sistema.")
+        else:
+            with st.form("forgot"):
+                st.caption("1. Receba um código no seu e-mail (vale 15 minutos).")
+                f_email = st.text_input("E-mail", key="forgot_email")
+                if st.form_submit_button("Enviar código", use_container_width=True):
+                    try:
+                        container.send_password_reset(f_email)
+                        st.success("Se o e-mail tiver conta, o código foi enviado.")
+                    except Exception as e:
+                        st.error(f"Não foi possível enviar: {e}")
+            with st.form("reset"):
+                st.caption("2. Crie a nova senha com o código.")
+                r_email = st.text_input("E-mail", key="reset_email")
+                code = st.text_input("Código")
+                new_pw = st.text_input(f"Nova senha (mínimo de {MIN_PASSWORD} caracteres)", type="password", key="reset_pw")
+                if st.form_submit_button("Criar nova senha", type="primary", use_container_width=True):
+                    try:
+                        container.auth.reset_password(r_email, code, new_pw)
+                        st.success("Senha alterada. Entre com a nova senha na aba Entrar.")
+                    except AuthError as e:
+                        st.error(str(e))
     with tab_signup:
         if not settings.allow_registration:
             st.info("O cadastro de novos usuários está fechado. Peça acesso a quem administra o sistema.")
@@ -91,18 +153,23 @@ def login_screen() -> None:
                     else:
                         try:
                             user = container.register_user(name, email, password)
-                            st.session_state.token = container.auth.open_session(user, "streamlit")
-                            st.session_state.user = user
+                            start_session(container.auth.open_session(user, "streamlit", _client_ip()), user)
                             st.rerun()
                         except AuthError as e:
                             st.error(str(e))
 
 
 if container.auth is not None:
-    # A sessão vive no banco: se foi encerrada ou venceu, volta para o login.
-    if st.session_state.token and container.auth.user_for_token(st.session_state.token) is None:
-        st.session_state.token, st.session_state.user, st.session_state.meeting = "", None, None
+    write_cookie()
+    # Página recarregada: a sessão volta pelo cookie.
+    if not st.session_state.token:
+        st.session_state.token = st.context.cookies.get(COOKIE, "")
+    # A sessão vive no banco: encerrada ou vencida, volta para o login.
+    st.session_state.user = container.auth.user_for_token(st.session_state.token)
     if st.session_state.user is None:
+        if st.session_state.token:
+            end_session()
+            write_cookie()
         login_screen()
         st.stop()
 
@@ -111,7 +178,7 @@ OWNER = st.session_state.user.id if st.session_state.user else None
 
 
 def my_meetings() -> list:
-    return container.repository.list_all(OWNER)
+    return container.meetings_of(OWNER)
 
 
 def select_meeting(meeting) -> None:
@@ -216,15 +283,14 @@ with st.sidebar:
         st.caption(f"👤 {st.session_state.user.name}")
         if st.button("Sair", use_container_width=True):
             container.auth.logout(st.session_state.token)
-            st.session_state.token, st.session_state.user, st.session_state.meeting = "", None, None
-            st.query_params.clear()
+            end_session()
             st.rerun()
     st.divider()
 
     page_label = st.radio(
         "Navegação",
         options=list(_PAGES.keys()),
-        index=0 if st.session_state.page == "meetings" else 1,
+        index=list(_PAGES.values()).index(st.session_state.page),
         label_visibility="collapsed",
     )
     st.session_state.page = _PAGES[page_label]
@@ -322,6 +388,10 @@ if st.session_state.page == "meetings":
                 ):
                     try:
                         new_id = container.dispatch_bot(meet_url.strip(), meeting_title, owner_id=OWNER or "")
+                    except MeetingInProgress as e:
+                        st.warning(str(e))
+                        select_meeting(container.meeting_for(e.meeting_id, OWNER))
+                        st.rerun()
                     except ValueError as e:
                         st.error(str(e))
                     else:
@@ -488,3 +558,67 @@ elif st.session_state.page == "chat":
                     except Exception as e:
                         answer = f"⚠️ Erro: {e}"
                 st.write(answer)
+
+elif st.session_state.page == "account":
+    from datetime import datetime as _dt
+    from use_cases.auth import MIN_PASSWORD, AuthError, session_id
+    user = st.session_state.user
+    st.title("👤 Minha conta")
+    st.caption(f"{user.name} · {user.email}" + (" · administrador" if user.is_admin else ""))
+
+    st.subheader("Sessões abertas")
+    st.caption("Cada navegador ou aparelho em que você entrou. Encerrar uma sessão pede login de novo nela.")
+    current = session_id(st.session_state.token)
+    sessions = container.auth.sessions(user)
+    for s in sessions:
+        col_info, col_btn = st.columns([5, 1])
+        agent = (s.get("user_agent") or "desconhecido")[:60]
+        col_info.write(f"{'🟢 **Esta sessão** · ' if s['_id'] == current else ''}{agent} · IP {s.get('ip') or '?'} · "
+                       f"desde {s['created_at']:%d/%m/%Y %H:%M} UTC")
+        if s["_id"] != current and col_btn.button("Encerrar", key=f"end_{s['_id']}", use_container_width=True):
+            container.auth.end_session(user, s["_id"])
+            st.rerun()
+    others = len(sessions) - 1
+    if others > 0:
+        confirm_others = st.checkbox(f"Confirmo: encerrar as outras {others} sessões")
+        if st.button("Encerrar todas as outras sessões", disabled=not confirm_others):
+            n = container.auth.end_other_sessions(user, st.session_state.token)
+            st.success(f"{n} sessões encerradas. Esta continua aberta.")
+            st.rerun()
+
+    st.subheader("Trocar senha")
+    with st.form("change_password", clear_on_submit=True):
+        cur = st.text_input("Senha atual", type="password")
+        new = st.text_input(f"Nova senha (mínimo de {MIN_PASSWORD} caracteres)", type="password")
+        again = st.text_input("Repita a nova senha", type="password")
+        if st.form_submit_button("Trocar senha", type="primary"):
+            if new != again:
+                st.error("As senhas não conferem.")
+            else:
+                try:
+                    n = container.auth.change_password(user, cur, new, st.session_state.token)
+                    st.success(f"Senha trocada. {n} outras sessões foram encerradas.")
+                except AuthError as e:
+                    st.error(str(e))
+
+    if user.is_admin:
+        st.divider()
+        st.subheader("🛡 Administração: limpar sessões")
+        st.caption("Apaga só sessões: nenhum usuário nem reunião é afetado, e a sua sessão continua. "
+                   "Quem tiver a sessão apagada precisa entrar de novo.")
+        users = container.auth.users(user)
+        scope_label = st.radio("O que limpar", [
+            "Sessões vencidas", "Todas as sessões de um usuário", "Todas as sessões, menos a minha"])
+        scope = {"Sessões vencidas": "expired", "Todas as sessões de um usuário": "user",
+                 "Todas as sessões, menos a minha": "all_but_mine"}[scope_label]
+        target = ""
+        if scope == "user":
+            chosen = st.selectbox("Usuário", users, format_func=lambda u: f"{u.name} ({u.email})")
+            target = chosen.id if chosen else ""
+        typed = st.text_input("Digite LIMPAR para confirmar")
+        if st.button("Limpar sessões", type="primary", disabled=typed != "LIMPAR"):
+            try:
+                n = container.auth.purge_sessions(user, scope, st.session_state.token, target)
+                st.success(f"{n} sessões apagadas.")
+            except AuthError as e:
+                st.error(str(e))

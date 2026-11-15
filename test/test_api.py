@@ -20,7 +20,7 @@ class MemoryAuthStore:
     """Mesmo contrato do MongoAuthStore, em memória."""
 
     def __init__(self):
-        self.users, self.sessions = {}, {}
+        self.users, self.sessions_, self.resets = {}, {}, {}
 
     def add_user(self, user):
         if any(u.email == user.email for u in self.users.values()):
@@ -34,25 +34,63 @@ class MemoryAuthStore:
     def user_by_id(self, user_id):
         return self.users.get(user_id)
 
+    def list_users(self):
+        return list(self.users.values())
+
     def count_users(self):
         return len(self.users)
 
+    def update_user(self, user_id, fields):
+        for k, v in fields.items():
+            setattr(self.users[user_id], k, v)
+
     def add_session(self, session):
-        self.sessions[session["_id"]] = session
+        self.sessions_[session["_id"]] = session
 
-    def session(self, token_hash):
-        return self.sessions.get(token_hash)
+    def session(self, sid):
+        return self.sessions_.get(sid)
 
-    def delete_session(self, token_hash):
-        self.sessions.pop(token_hash, None)
+    def sessions_of(self, user_id):
+        return [s for s in self.sessions_.values() if s["user_id"] == user_id]
+
+    def delete_session(self, sid):
+        self.sessions_.pop(sid, None)
+
+    def delete_sessions(self, user_id=None, keep=None, expired_before=None):
+        doomed = [sid for sid, s in self.sessions_.items()
+                  if (user_id is None or s["user_id"] == user_id) and sid != keep
+                  and (expired_before is None or s["expires_at"] < expired_before)]
+        for sid in doomed:
+            del self.sessions_[sid]
+        return len(doomed)
+
+    def put_reset(self, reset):
+        self.resets[reset["_id"]] = dict(reset)
+
+    def get_reset(self, user_id):
+        return self.resets.get(user_id)
+
+    def update_reset(self, user_id, fields):
+        self.resets[user_id].update(fields)
+
+    def delete_reset(self, user_id):
+        self.resets.pop(user_id, None)
 
 
 class FakeContainer:
-    """Container sem fila nem LLM; as regras de dono são as de verdade."""
+    """Container sem fila nem LLM; as regras de dono e de envio do bot são as de verdade."""
     meeting_for = Container.meeting_for
+    meetings_of = Container.meetings_of
+    _follow = Container._follow
+    delete_meeting = Container.delete_meeting
     register_user = Container.register_user
     set_task_done = Container.set_task_done
+    dispatch_bot = Container.dispatch_bot
+    send_password_reset = Container.send_password_reset
+    _title_from_calendar = Container._title_from_calendar
     auth = None  # como em solo; os testes de login ligam com `with_login`
+    calendar = None
+    _is_collab = True
 
     def __init__(self, repo, queued):
         self.repository, self.queued = repo, queued
@@ -60,12 +98,6 @@ class FakeContainer:
     def enqueue_processing(self, meeting_id, audio_path, title, wait=False, owner_id=""):
         self.queued.append((meeting_id, audio_path, title))
         self.repository.save(Meeting(id=meeting_id, title=title, owner_id=owner_id, audio_path=audio_path))
-
-    def dispatch_bot(self, url, title="", owner_id=""):
-        from infrastructure.recorder.platforms import detect_platform
-        platform = detect_platform(url)
-        self.repository.save(Meeting(id="id-bot", title=title, owner_id=owner_id, platform=platform.key))
-        return "id-bot"
 
 
 @pytest.fixture
@@ -82,6 +114,10 @@ def ctx(tmp_path, monkeypatch):
         monkeypatch.setattr(f"{mod}.get_settings", lambda: settings)
     for mod in ("api.security", "api.routers.auth", "api.routers.capture", "api.routers.meetings", "api.chat"):
         monkeypatch.setattr(f"{mod}.get_container", lambda: container)
+    import worker.tasks
+    bots = []
+    monkeypatch.setattr(worker.tasks.join_meeting_task, "delay", lambda *a: bots.append(a))
+    container.bots = bots
     return SimpleNamespace(client=TestClient(main.app), repo=repo, queued=queued, settings=settings,
                            tmp=tmp_path, container=container)
 
@@ -203,7 +239,8 @@ def test_email_de_tarefas(ctx, monkeypatch):
         def __enter__(self): return self
         def __exit__(self, *a): return False
         def starttls(self, context=None): pass
-        def login(self, user, password): sent.append(("login", user))
+        def auth_plain(self): return ""
+        def auth(self, mechanism, authobject): sent.append(("login", self.user))
         def sendmail(self, frm, to, body): sent.append((frm, to, body))
 
     smtp = SimpleNamespace(smtp_user="", smtp_password="", smtp_from_email="", smtp_host="h", smtp_port=1, email_enabled=False)
@@ -241,14 +278,14 @@ def test_agenda_da_titulo_ao_bot_e_falha_da_agenda_nao_impede(tmp_path):
     orig = tasks.join_meeting_task.delay
     tasks.join_meeting_task.delay = lambda *a: dispatched.append(a)
     try:
-        url = "https://meet.google.com/abc-defg-hij"
+        url = "https://meet.google.com/abc-defg-hi{}"
         c.calendar = Cal("Sprint Review")
-        assert c.repository.find_by_id(c.dispatch_bot(url)).title == "Sprint Review"
-        assert c.repository.find_by_id(c.dispatch_bot(url, "Meu título")).title == "Meu título"
+        assert c.repository.find_by_id(c.dispatch_bot(url.format("a"))).title == "Sprint Review"
+        assert c.repository.find_by_id(c.dispatch_bot(url.format("b"), "Meu título")).title == "Meu título"
         c.calendar = Cal(boom=True)
-        assert c.repository.find_by_id(c.dispatch_bot(url)).title.startswith("Reunião ")
+        assert c.repository.find_by_id(c.dispatch_bot(url.format("c"))).title.startswith("Reunião ")
         c.calendar = None
-        assert c.repository.find_by_id(c.dispatch_bot(url)).title.startswith("Reunião ")
+        assert c.repository.find_by_id(c.dispatch_bot(url.format("d"))).title.startswith("Reunião ")
         assert len(dispatched) == 4
     finally:
         tasks.join_meeting_task.delay = orig
@@ -294,14 +331,14 @@ def test_cadastro_login_e_logout(with_login):
 def test_banco_nao_guarda_senha_nem_token(with_login):
     ana, _ = signup(with_login)
     token = ana["Authorization"].split()[1]
-    stored = str(vars(next(iter(with_login.store.users.values())))) + str(with_login.store.sessions)
+    stored = str(vars(next(iter(with_login.store.users.values())))) + str(with_login.store.sessions_)
     assert "senha-forte" not in stored and token not in stored
 
 
 def test_sessao_vencida_e_recusada(with_login):
     from datetime import datetime, timedelta
     ana, _ = signup(with_login)
-    for s in with_login.store.sessions.values():
+    for s in with_login.store.sessions_.values():
         s["expires_at"] = datetime.now() - timedelta(days=1)
     assert with_login.client.get("/meetings/", headers=ana).status_code == 401
 
@@ -317,19 +354,20 @@ def test_cada_usuario_ve_so_as_proprias_reunioes(with_login):
     assert c.get("/meetings/", headers=bia).json() == []
 
     r = c.post("/meetings/bot", headers=bia, json={"meeting_url": "https://meet.google.com/abc-defg-hij", "title": "Da Bia"})
-    assert r.status_code == 200 and with_login.repo.find_by_id("id-bot").platform == "meet"
+    bia_id = r.json()["meeting_id"]
+    assert r.status_code == 200 and with_login.repo.find_by_id(bia_id).platform == "meet"
     assert [m["title"] for m in c.get("/meetings/", headers=bia).json()] == ["Da Bia"]
 
     # reunião alheia responde 404 em toda rota, sem revelar que existe
     for method, path, body in [
-        ("get", "/meetings/id-bot", None), ("get", "/meetings/id-bot/status", None),
-        ("get", "/meetings/id-bot/export.md", None), ("delete", "/meetings/id-bot", None),
-        ("post", "/meetings/id-bot/process", None), ("post", "/meetings/id-bot/chat", {"question": "oi"}),
-        ("patch", "/meetings/id-bot/tasks/0", {"done": True}),
-        ("post", "/meetings/id-bot/tasks/email", {"to": "a@b.com"}),
+        ("get", "/meetings/{id}", None), ("get", "/meetings/{id}/status", None),
+        ("get", "/meetings/{id}/export.md", None), ("delete", "/meetings/{id}", None),
+        ("post", "/meetings/{id}/process", None), ("post", "/meetings/{id}/chat", {"question": "oi"}),
+        ("patch", "/meetings/{id}/tasks/0", {"done": True}),
+        ("post", "/meetings/{id}/tasks/email", {"to": "a@b.com"}),
     ]:
-        assert c.request(method, path, headers=ana, json=body).status_code == 404, path
-    assert with_login.repo.find_by_id("id-bot") is not None
+        assert c.request(method, path.format(id=bia_id), headers=ana, json=body).status_code == 404, path
+    assert with_login.repo.find_by_id(bia_id) is not None
 
     assert len(c.get("/meetings/", headers=AUTH).json()) == 2       # chave de serviço enxerga tudo
     assert c.get("/meetings/").status_code == 401
@@ -343,6 +381,7 @@ def test_detalhe_e_exclusao(with_login):
     audio.write_bytes(b"x")
     with_login.repo.save(Meeting(
         id="m1", title="T", owner_id=user["id"], audio_path=str(audio), transcript_formatted="[00:00] Ana: oi",
+        status=MeetingStatus.DONE,
         chat_history=[{"role": "user", "content": "quem falou?"}, {"role": "assistant", "content": "Ana"}],
     ))
     d = c.get("/meetings/m1", headers=ana).json()
@@ -378,3 +417,220 @@ def test_openapi_em_dia():
         return ({(p, m) for p, ops in spec["paths"].items() for m in ops}, set(spec["components"]["schemas"]))
 
     assert shape(json.loads(PATH.read_text(encoding="utf-8"))) == shape(json.loads(render()))
+
+
+# ── Sprint 7: sessões, bloqueio, senha, admin e isolamento por perfil ────
+
+def test_minhas_sessoes_encerrar_uma_e_todas_as_outras(with_login):
+    c = with_login.client
+    ana, _ = signup(with_login)
+    tok = lambda r: {"Authorization": f"Bearer {r.json()['token']}"}
+    celular = tok(c.post("/auth/login", json={"email": "ana@empresa.com", "password": "senha-forte"}))
+    notebook = tok(c.post("/auth/login", json={"email": "ana@empresa.com", "password": "senha-forte"}))
+    bia, _ = signup(with_login, email="bia@empresa.com", name="Bia")
+
+    lista = c.get("/auth/sessions", headers=ana).json()
+    assert len(lista) == 3 and sum(s["current"] for s in lista) == 1
+    assert not any(ana["Authorization"].split()[1] in str(s) for s in lista)  # token nunca aparece
+
+    # sessão de outro usuário: 404, e continua valendo
+    bia_sid = c.get("/auth/sessions", headers=bia).json()[0]["id"]
+    assert c.delete(f"/auth/sessions/{bia_sid}", headers=ana).status_code == 404
+    assert c.get("/auth/me", headers=bia).status_code == 200
+
+    alvo = next(s["id"] for s in lista if not s["current"])
+    assert c.delete(f"/auth/sessions/{alvo}", headers=ana).status_code == 204
+    assert c.delete("/auth/sessions", headers=ana).json() == {"count": 1}
+    assert [c.get("/auth/me", headers=h).status_code for h in (ana, celular, notebook, bia)] == [200, 401, 401, 200]
+
+
+def test_cinco_senhas_erradas_bloqueiam(with_login, monkeypatch):
+    import use_cases.auth as auth
+    c = with_login.client
+    signup(with_login)
+    errada = {"email": "ana@empresa.com", "password": "errada-123"}
+    assert [c.post("/auth/login", json=errada).status_code for _ in range(5)] == [401] * 5
+    certa = {"email": "ana@empresa.com", "password": "senha-forte"}
+    r = c.post("/auth/login", json=certa)
+    assert r.status_code == 429 and "bloqueada" in r.json()["detail"]
+    later = auth.utcnow() + auth.timedelta(minutes=auth.LOCK_MINUTES + 1)
+    monkeypatch.setattr(auth, "utcnow", lambda: later)
+    assert c.post("/auth/login", json=certa).status_code == 200
+    assert with_login.store.user_by_email("ana@empresa.com").failed_logins == 0
+
+
+def test_trocar_senha_encerra_as_outras_sessoes(with_login):
+    c = with_login.client
+    ana, _ = signup(with_login)
+    outra = {"Authorization": "Bearer " + c.post("/auth/login", json={"email": "ana@empresa.com", "password": "senha-forte"}).json()["token"]}
+    assert c.post("/auth/password", headers=ana, json={"current_password": "errada!!", "new_password": "nova-senha"}).status_code == 400
+    assert c.post("/auth/password", headers=ana, json={"current_password": "senha-forte", "new_password": "nova-senha"}).json() == {"count": 1}
+    assert c.get("/auth/me", headers=ana).status_code == 200 and c.get("/auth/me", headers=outra).status_code == 401
+    assert c.post("/auth/login", json={"email": "ana@empresa.com", "password": "nova-senha"}).status_code == 200
+
+
+def test_recuperar_senha_por_codigo(with_login, monkeypatch):
+    import infrastructure.email.email_sender as mail
+    c = with_login.client
+    ana, _ = signup(with_login)
+    sent = []
+    monkeypatch.setattr(mail.EmailSender, "__init__", lambda self: None)
+    monkeypatch.setattr(mail.EmailSender, "send_password_reset", lambda self, to, name, code, minutes: sent.append((to, code)))
+    monkeypatch.setattr("presentation.container.get_settings", lambda: SimpleNamespace(email_enabled=True))
+
+    # mesma resposta para e-mail com e sem conta; só a conta real recebe código
+    assert c.post("/auth/password/forgot", json={"email": "ninguem@x.com"}).status_code == 202
+    assert c.post("/auth/password/forgot", json={"email": "ANA@empresa.com"}).status_code == 202
+    assert len(sent) == 1 and sent[0][0] == "ana@empresa.com"
+    code = sent[0][1]
+    assert code not in str(with_login.store.resets)  # banco guarda só o hash
+
+    reset = lambda cd: c.post("/auth/password/reset", json={"email": "ana@empresa.com", "code": cd, "new_password": "senha-nova"})
+    assert reset("ERRADO12").status_code == 400
+    assert reset(code.lower()).status_code == 204          # aceita minúsculas
+    assert reset(code).status_code == 400                   # uso único
+    assert c.get("/auth/me", headers=ana).status_code == 401  # todas as sessões encerradas
+    assert c.post("/auth/login", json={"email": "ana@empresa.com", "password": "senha-nova"}).status_code == 200
+
+
+def test_codigo_de_recuperacao_esgota_tentativas(with_login):
+    signup(with_login)
+    auth = with_login.container.auth
+    _, code = auth.request_reset("ana@empresa.com")
+    for _ in range(5):
+        with pytest.raises(Exception):
+            auth.reset_password("ana@empresa.com", "ERRADO12", "senha-nova")
+    with pytest.raises(Exception):
+        auth.reset_password("ana@empresa.com", code, "senha-nova")  # certo, mas tarde demais
+
+
+def test_sem_smtp_recuperacao_avisa(with_login, monkeypatch):
+    monkeypatch.setattr("presentation.container.get_settings", lambda: SimpleNamespace(email_enabled=False))
+    assert with_login.client.post("/auth/password/forgot", json={"email": "a@b.com"}).status_code == 503
+
+
+def test_admin_limpa_sessoes_com_seguranca(with_login):
+    from datetime import datetime, timedelta
+    c = with_login.client
+    admin, admin_user = signup(with_login)
+    bia, bia_user = signup(with_login, email="bia@empresa.com", name="Bia")
+    caio, _ = signup(with_login, email="caio@empresa.com", name="Caio")
+    assert admin_user["role"] == "admin" and bia_user["role"] == "user"
+    n_users = len(with_login.store.users)
+
+    # usuário comum não administra; confirmação é obrigatória
+    assert c.get("/admin/users", headers=bia).status_code == 403
+    assert c.post("/admin/sessions/purge", headers=bia, json={"scope": "all_but_mine", "confirm": "LIMPAR"}).status_code == 403
+    assert c.post("/admin/sessions/purge", headers=admin, json={"scope": "all_but_mine", "confirm": "sim"}).status_code == 422
+    assert c.post("/admin/sessions/purge", headers=admin, json={"scope": "user", "user_id": "x", "confirm": "LIMPAR"}).status_code == 400
+    assert len(c.get("/admin/users", headers=admin).json()) == 3
+
+    # vencidas: só elas
+    old = with_login.container.auth.open_session(with_login.store.user_by_id(bia_user["id"]))
+    with_login.store.session(__import__("use_cases.auth", fromlist=["x"]).session_id(old))["expires_at"] = datetime.now() - timedelta(days=1)
+    assert c.post("/admin/sessions/purge", headers=admin, json={"scope": "expired", "confirm": "LIMPAR"}).json() == {"count": 1}
+    assert c.get("/auth/me", headers=bia).status_code == 200
+
+    # de um usuário
+    r = c.post("/admin/sessions/purge", headers=admin, json={"scope": "user", "user_id": bia_user["id"], "confirm": "LIMPAR"})
+    assert r.json() == {"count": 1} and c.get("/auth/me", headers=bia).status_code == 401
+    assert c.get("/auth/me", headers=caio).status_code == 200
+
+    # todas menos a minha
+    r = c.post("/admin/sessions/purge", headers=admin, json={"scope": "all_but_mine", "confirm": "LIMPAR"})
+    assert r.json() == {"count": 1} and c.get("/auth/me", headers=caio).status_code == 401
+    assert c.get("/auth/me", headers=admin).status_code == 200
+    assert len(with_login.store.users) == n_users  # ninguém foi apagado
+
+
+def test_banco_antigo_ganha_um_admin(with_login):
+    from use_cases.auth import AuthService
+    store = with_login.store
+    AuthService(store).register("Ana", "ana@empresa.com", "senha-forte")
+    AuthService(store).register("Bia", "bia@empresa.com", "senha-forte")
+    for u in store.users.values():
+        u.role = "user"  # como os usuários criados antes do papel admin
+    AuthService(store).ensure_admin()
+    assert [u.name for u in store.users.values() if u.is_admin] == ["Ana"]
+
+
+def test_mesmo_link_dois_usuarios_um_bot_duas_reunioes(with_login):
+    from domain.entities.meeting import Summary, Task
+    c = with_login.client
+    ana, _ = signup(with_login)
+    bia, _ = signup(with_login, email="bia@empresa.com", name="Bia")
+    bot = lambda h, url: c.post("/meetings/bot", headers=h, json={"meeting_url": url, "title": "Daily"})
+
+    a = bot(ana, "https://meet.google.com/abc-defg-hij")
+    assert a.status_code == 200
+    # mesmo usuário, mesmo link (escrito diferente) com a reunião em andamento: 409
+    dup = bot(ana, "https://MEET.google.com/abc-defg-hij/?authuser=0")
+    assert dup.status_code == 409 and a.json()["meeting_id"] in dup.json()["detail"]
+    b = bot(bia, "https://meet.google.com/abc-defg-hij?authuser=1")
+    assert b.status_code == 200 and len(with_login.container.bots) == 1   # um bot só
+    a_id, b_id = a.json()["meeting_id"], b.json()["meeting_id"]
+    assert a_id != b_id
+
+    # a gravação da Ana anda; a reunião da Bia acompanha
+    src = with_login.repo.find_by_id(a_id)
+    src.status = MeetingStatus.RECORDING
+    with_login.repo.save(src)
+    assert c.get(f"/meetings/{b_id}/status", headers=bia).json()["status"] == "recording"
+    assert [m["meeting_id"] for m in c.get("/meetings/", headers=bia).json()] == [b_id]
+
+    # terminou: a Bia recebe uma cópia própria
+    src.status, src.transcript_text = MeetingStatus.DONE, "Ana: oi"
+    src.summary = Summary(overview="geral", tasks=[Task("Revisar")])
+    with_login.repo.save(src)
+    assert c.get(f"/meetings/{b_id}", headers=bia).json()["transcript"] == "Ana: oi"
+    c.patch(f"/meetings/{b_id}/tasks/0", headers=bia, json={"done": True})
+    assert with_login.repo.find_by_id(a_id).summary.tasks[0].done is False   # tarefas independentes
+    assert with_login.repo.find_by_id(b_id).owner_id != with_login.repo.find_by_id(a_id).owner_id
+
+    # depois de terminar, o mesmo link volta a ser aceito
+    assert bot(ana, "https://meet.google.com/abc-defg-hij").status_code == 200
+
+
+def test_apagar_reuniao_preserva_gravacao_compartilhada(with_login):
+    c = with_login.client
+    ana, _ = signup(with_login)
+    bia, _ = signup(with_login, email="bia@empresa.com", name="Bia")
+    a_id = c.post("/meetings/bot", headers=ana, json={"meeting_url": "https://meet.google.com/abc-defg-hij"}).json()["meeting_id"]
+    b_id = c.post("/meetings/bot", headers=bia, json={"meeting_url": "https://meet.google.com/abc-defg-hij"}).json()["meeting_id"]
+    assert c.delete(f"/meetings/{a_id}", headers=ana).status_code == 409   # em andamento
+
+    audio = with_login.tmp / "audio" / f"{a_id}.webm"
+    audio.parent.mkdir(parents=True, exist_ok=True)
+    audio.write_bytes(b"x")
+    src = with_login.repo.find_by_id(a_id)
+    src.status, src.audio_path, src.transcript_text = MeetingStatus.DONE, str(audio), "Ana: oi"
+    with_login.repo.save(src)
+
+    assert c.delete(f"/meetings/{a_id}", headers=ana).status_code == 204
+    assert audio.exists()                                   # a Bia ainda usa a gravação
+    d = c.get(f"/meetings/{b_id}", headers=bia).json()
+    assert d["status"] == "done" and d["transcript"] == "Ana: oi" and d["has_audio"]
+    assert c.delete(f"/meetings/{b_id}", headers=bia).status_code == 204
+    assert not audio.exists()                               # último a usar apaga
+
+
+def test_smtp_recusado_mostra_o_motivo(monkeypatch):
+    """O Gmail fecha a conexão depois de recusar a senha; o erro mostrado precisa ser a senha."""
+    import smtplib
+    import infrastructure.email.email_sender as mod
+
+    class RejectingSMTP:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def starttls(self, context=None): pass
+        def auth_plain(self): return ""
+        def auth(self, mechanism, authobject):
+            raise smtplib.SMTPAuthenticationError(535, b"5.7.8 Username and Password not accepted")
+
+    cfg = SimpleNamespace(smtp_user="bot@gmail.com", smtp_password="x", smtp_from_email="", smtp_host="h",
+                          smtp_port=587, email_enabled=True)
+    monkeypatch.setattr(mod, "get_settings", lambda: cfg)
+    monkeypatch.setattr(mod.smtplib, "SMTP", RejectingSMTP)
+    with pytest.raises(RuntimeError, match="senha de app"):
+        mod.EmailSender().send_password_reset("ana@empresa.com", "Ana", "ABCD2345", 15)

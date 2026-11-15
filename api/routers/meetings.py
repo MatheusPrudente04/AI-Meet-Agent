@@ -14,7 +14,7 @@ from config.settings import get_settings
 from domain.entities.meeting import Meeting, MeetingStatus
 from infrastructure.email.email_sender import EmailSender
 from infrastructure.exporters.markdown_exporter import MarkdownExporter
-from presentation.container import get_container
+from presentation.container import MeetingInProgress, get_container
 
 router = APIRouter()
 _NOT_FOUND = {404: {"description": "Reunião não existe ou é de outro usuário"}}
@@ -30,7 +30,7 @@ def _meeting(meeting_id: str, principal: Principal) -> Meeting:
 @router.get("/", response_model=list[MeetingStatusResponse], summary="Lista as reuniões do usuário")
 def list_meetings(principal: Principal = Depends(current_principal)):
     """Da mais recente para a mais antiga, sem resumo nem transcrição."""
-    meetings = get_container().repository.list_all(principal.owner_id)
+    meetings = get_container().meetings_of(principal.owner_id)
     return [_to_response(m, with_summary=False) for m in meetings]
 
 
@@ -86,13 +86,17 @@ class SendBotRequest(BaseModel):
     title: str = Field("", description="Vazio = título do evento na agenda (se ligada) ou a data")
 
 
-@router.post("/bot", response_model=UploadResponse, summary="Manda o bot para uma reunião",
-             responses={422: {"description": "Link não reconhecido ou plataforma sem suporte"}})
+@router.post("/bot", response_model=UploadResponse, summary="Manda o bot para uma reunião", responses={
+    409: {"description": "Você já mandou o bot a este link e a reunião não acabou"},
+    422: {"description": "Link não reconhecido ou plataforma sem suporte"},
+})
 def send_bot(body: SendBotRequest, principal: Principal = Depends(current_principal)):
     """Enfileira o bot e responde na hora com o id. Quem organiza a reunião
     precisa admitir o bot quando ele pedir para entrar."""
     try:
         meeting_id = get_container().dispatch_bot(body.meeting_url, body.title, owner_id=principal.owner_id or "")
+    except MeetingInProgress as exc:
+        raise HTTPException(409, f"{exc} (id {exc.meeting_id})")
     except ValueError as exc:
         raise HTTPException(422, str(exc))
     return UploadResponse(
@@ -112,12 +116,14 @@ def get_meeting(meeting_id: str, principal: Principal = Depends(current_principa
     )
 
 
-@router.delete("/{meeting_id}", status_code=204, responses=_NOT_FOUND, summary="Apaga a reunião e a gravação")
+@router.delete("/{meeting_id}", status_code=204, summary="Apaga a reunião e a gravação",
+               responses={**_NOT_FOUND, 409: {"description": "Reunião em andamento"}})
 def delete_meeting(meeting_id: str, principal: Principal = Depends(current_principal)):
-    _meeting(meeting_id, principal)
-    get_container().repository.delete(meeting_id)
-    for f in Path(get_settings().audio_storage_path).glob(f"{meeting_id}.*"):
-        f.unlink(missing_ok=True)
+    """A gravação continua em disco se a reunião de outro usuário ainda a usa."""
+    try:
+        get_container().delete_meeting(_meeting(meeting_id, principal))
+    except MeetingInProgress:
+        raise HTTPException(409, "Reunião em andamento: espere terminar para apagar.")
 
 
 @router.post("/{meeting_id}/process", response_model=UploadResponse, summary="Reprocessa o áudio já gravado",

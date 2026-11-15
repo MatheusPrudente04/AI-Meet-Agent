@@ -18,9 +18,12 @@ Uma ADR só vira código depois de aceita. Ao aceitar, troque o status e a data 
 | 008 | Runtime e dependências travadas | Aceita, implementada em 2026-11-15 (venv local segue em 3.14) | 3 | Sim |
 | 009 | Legendas e identificação de falantes | Implementada (fase 2 em 2026-11-15) | 2B | Sim |
 | 010 | Contexto do LLM em reuniões longas | Aceita, implementada em 2026-11-15 | 4 | Sim |
-| 011 | Login de usuários e sessões no MongoDB | Aceita, implementada em 2026-11-15 | 5 | Com migração |
+| 011 | Login de usuários e sessões no MongoDB | Aceita, implementada em 2026-11-15 (ampliada na Sprint 7) | 5, 7 | Com migração |
 | 012 | Bot multiplataforma (Meet, Teams, Zoom; Discord adiado) | Aceita; Meet validado, Teams e Zoom não | 5 | Sim |
 | 013 | Contrato OpenAPI para um novo front | Aceita, implementada em 2026-11-15 | 5 | Sim |
+| 014 | Agente em LangGraph com contrato verificável | Proposta | 8 | Sim |
+| 015 | Concorrência: filas por etapa e justiça entre usuários | Aceita em 2026-11-15 | 9 | Sim |
+| 016 | Bot em container (Windows e servidor) | Aceita em 2026-11-15 | 10 | Sim |
 
 ### Desvios na implementação da Sprint 1
 
@@ -378,6 +381,31 @@ como hash. **Não verificado:** a tela de login do Streamlit com uma conta real 
 **Reverte-se assim.** Sem `Bearer`, a chave de serviço continua abrindo tudo; `owner_id` é um
 campo a mais no documento.
 
+**Ampliação da Sprint 7 (2026-11-15).**
+- **Login no Streamlit sobrevive ao F5:** o token vai num cookie (`meet_agent_session`,
+  `SameSite=Strict`) e é validado no banco a cada carga. Antes cada F5 abria uma sessão nova.
+  O cookie é gravado por JavaScript, então não é `HttpOnly`; com HTTPS (S11) ganha `Secure`.
+- **Minhas sessões:** cada usuário lista as próprias sessões e encerra uma ou todas as outras.
+  O id público da sessão é o SHA-256 do token: identifica, mas não serve para entrar.
+- **Papel admin:** a primeira conta (em banco antigo, a mais antiga) pode limpar sessões:
+  vencidas, de um usuário ou todas menos a sua. Exige digitar `LIMPAR`, nunca apaga usuários
+  nem reuniões nem a sessão de quem limpa, e registra no log o id do admin e quantas apagou.
+- **Bloqueio:** 5 senhas erradas seguidas bloqueiam o login por 15 minutos (429). Permite a um
+  terceiro bloquear uma conta de propósito; aceito em troca de barrar tentativa em massa.
+- **Senha:** troca (encerra as outras sessões) e recuperação por código de 8 caracteres enviado
+  por e-mail, guardado como hash, válido por 15 minutos e por 5 tentativas; ao usar, todas as
+  sessões da conta são encerradas. A resposta é a mesma exista ou não a conta.
+- **Mesmo link, usuários diferentes:** um bot só grava; cada usuário recebe a própria reunião
+  (`source_id` aponta para a gravação), acompanha o status dela e, quando termina, ganha uma
+  cópia independente do resultado (chat e tarefas separados). O mesmo usuário reenviando um link
+  em andamento recebe 409. Apagar uma reunião em andamento devolve 409; a gravação só sai do
+  disco quando nenhuma outra reunião a usa.
+- **Verificado:** testes de API para tudo acima; no navegador, contra um banco de rascunho:
+  cadastro, F5 sem novo login nem sessão nova, encerrar sessão, limpeza pelo admin (só a sessão
+  do outro usuário saiu, os dois usuários continuaram) e logout apagando o cookie. A conta real
+  existente foi promovida a admin na partida. **Não verificado:** e-mail de recuperação com SMTP
+  real (o envio de e-mail não foi disparado).
+
 ---
 
 ## ADR-012 — Bot multiplataforma
@@ -444,3 +472,102 @@ front precisar: hoje o acompanhamento é consulta periódica a `/status`.
 **Antes de um front em outro domínio:** incluir a origem dele em `ALLOWED_ORIGINS`.
 
 **Reverte-se assim.** As rotas novas são aditivas.
+
+---
+
+## ADR-014 — Agente em LangGraph com contrato verificável
+
+**Status.** Proposta (2026-11-15). Depende de receber o contrato do agente (S8-1).
+
+**Contexto.** O agente é uma chamada única ao LLM com as regras do contrato no prompt
+(`infrastructure/llm/langchain_llm_service.py`). Nada confere se a resposta cumpriu as regras;
+uma resposta fora do contrato chega ao usuário. O dono do produto pediu a migração para LangGraph
+com um contrato novo.
+
+**Decisão proposta.**
+- Chat e resumo viram grafos LangGraph atrás da porta `ILLMService`: os casos de uso, a API e o
+  Streamlit não mudam.
+- O contrato vira dois pedaços: as instruções do prompt e um nó de **verificação** com as regras
+  que dão para conferir (idioma, formato, citação de quem falou, frase padrão quando não há
+  resposta). Resposta reprovada é refeita uma vez; reprovada de novo, sai a frase padrão.
+- A chamada nativa ao Ollama com `num_ctx` (ADR-010) continua sendo usada dentro dos nós: o
+  LangGraph não obriga os wrappers de modelo do LangChain.
+- A conversa continua em `chat_history` da reunião; o checkpointer do LangGraph só entra se o
+  contrato exigir estado entre passos que o documento não guarde.
+- Antes de migrar, um conjunto de avaliação mede o agente atual; a migração não pode piorar.
+
+**Alternativas descartadas.**
+- Só reescrever o prompt: não confere a resposta, que é o defeito.
+- Agente com ferramentas livres (ReAct): mais chamadas ao modelo local e menos previsível; o
+  fluxo aqui é fixo.
+
+**Trade-off aceito.** Uma resposta reprovada custa mais uma chamada ao LLM (mais lenta no Ollama).
+
+**Reverte-se assim.** A implementação atual fica até a avaliação aprovar a nova; a troca é no `container.py`.
+
+---
+
+## ADR-015 — Concorrência: filas por etapa e justiça entre usuários
+
+**Status.** Aceita pelo dono do produto em 2026-11-15. Metas definidas na S9-1, depois da medição.
+
+**Contexto (medido).** API em um processo; worker de processamento e worker do bot com um
+trabalho por vez (`--pool=solo`); Ollama com um pedido por vez. Uma fila única (FIFO) faz a
+reunião de 2 h de um usuário segurar a transcrição de todos.
+
+**Decisão proposta.**
+- **Filas por etapa** no Celery: `transcribe`, `llm` e `bot`, cada uma com workers próprios. O
+  pipeline continua único (ADR-001): cada etapa encadeia a próxima.
+- **Processos, não threads, para o trabalho pesado.** Whisper e o LLM usam CPU/GPU; em Python
+  threads não paralelizam isso (GIL). Paralelismo = mais workers (`docker compose up --scale`),
+  limitado pela memória: cada worker de transcrição carrega o modelo do Whisper.
+- **Threads só onde é espera de I/O:** as rotas da API (já rodam em pool de threads do FastAPI),
+  agora com `uvicorn --workers` para usar mais de um núcleo.
+- **Justiça:** no máximo K trabalhos em andamento por usuário (os demais esperam a vez dele) e
+  limite de pedidos por minuto na API, por usuário.
+- **Bots em paralelo:** um worker por perfil do Chrome; o perfil não pode ser usado por dois
+  navegadores ao mesmo tempo.
+- **LLM:** chamadas simultâneas limitadas ao que o Ollama atende (`OLLAMA_NUM_PARALLEL`); o
+  excedente espera na fila `llm`, não estoura a API.
+
+**Alternativas descartadas.**
+- Reescrever a API como assíncrona: o gargalo não está na API, está em Whisper e LLM.
+- Kubernetes/autoescala: a implantação da 1.0 é um servidor com compose.
+
+**Trade-off aceito.** Mais containers e mais memória; o limite real de usuários simultâneos é o
+hardware de Whisper e LLM, e a ADR registra o número medido.
+
+**Reverte-se assim.** Voltar para uma fila só é mudar o roteamento das tasks.
+
+---
+
+## ADR-016 — Bot em container (Windows e servidor)
+
+**Status.** Aceita pelo dono do produto em 2026-11-15: o bot vai para um container em vez de
+adaptar o worker do host para o Windows.
+
+**Contexto.** O worker do bot roda no host porque usa o login do Google do Chromium do macOS
+(ADR-006). Isso prende o sistema ao macOS do dono: no Windows exigiria Python, Playwright e
+adaptações no host, e num servidor de produção não há área de trabalho. O pedido é rodar no
+Windows via Docker.
+
+**Decisão proposta.**
+- **Bot em container Linux**: Chromium com tela virtual (Xvfb), extensão de captura e perfil do
+  bot num volume. O login da conta do bot é feito uma vez, pelo navegador, via noVNC.
+- O mesmo compose serve Windows (Docker Desktop com WSL2), macOS, Linux e o servidor da 1.0.
+- Adaptadores que ainda fazem falta no Windows: fim de linha LF (`.gitattributes`) para scripts e
+  arquivos do container; backup e restauração como comandos do compose em vez de `bash` no host;
+  repositório clonado dentro do WSL2 (montagem de `./data` a partir do Windows é lenta);
+  `host.docker.internal` para o Ollama no host (já usado).
+- O worker do bot no host continua possível como modo de desenvolvimento.
+
+**Alternativas descartadas.**
+- Adaptar o worker do host para Windows (caminhos, sinais, Playwright): resolve só o Windows e
+  ainda deixa a produção sem bot.
+- Imagem de Windows no Docker: pesada e sem suporte do Playwright para containers Windows.
+
+**Riscos.** O Google pode exigir verificação extra para uma conta usada de um IP de servidor;
+validar cedo, na S10-1. Áudio no container precisa de um servidor de som virtual (PulseAudio)
+para a aba tocar; validar a captura antes de seguir.
+
+**Reverte-se assim.** O worker do host continua funcionando; o container do bot é um serviço a mais no compose.

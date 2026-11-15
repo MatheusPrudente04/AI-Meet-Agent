@@ -182,6 +182,13 @@ PLATFORMS = (
 )
 
 
+def meeting_key(url: str) -> str:
+    """O mesmo link escrito de jeitos diferentes (maiúsculas, parâmetros, barra no fim)
+    vira a mesma chave: identifica a reunião entre usuários."""
+    parsed = urlparse(detect_platform(url).join_url(url.strip()))
+    return f"{parsed.hostname}{parsed.path}".lower().rstrip("/")
+
+
 def detect_platform(url: str) -> Platform:
     """Plataforma do link. Lança UnsupportedMeetingUrl com mensagem para o usuário."""
     parsed = urlparse((url or "").strip())

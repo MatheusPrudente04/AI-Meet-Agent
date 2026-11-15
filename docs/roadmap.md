@@ -95,8 +95,7 @@ do dono como anfitriã: o bot esperou a admissão, ligou as legendas, registrou 
 presente e retirou o próprio nome. Detalhes na ADR-009.
 - A leitura das legendas ficou no recorder, não na extensão; `POST /capture/speakers` não existe.
 - S2B-7 é o mesmo comando da S2-6 (`run_bot --smoke`); passou numa reunião real em 2026-11-15.
-- **Falta:** validar o nome de terceiros nas legendas com duas ou mais pessoas falando (critério de
-  saída).
+- Nome de terceiros com duas ou mais pessoas falando: validado pelo dono do produto em 2026-11-15.
 
 Limites conhecidos, para não prometer o que o Meet não entrega:
 - O bot enxerga o **nome de exibição** de cada participante, não o e-mail nem um id estável da conta.
@@ -163,7 +162,21 @@ para um front novo.
 
 Saída: duas contas, cada uma enviando o bot a uma reunião e vendo só a própria. **Pendente** (depende de pessoas).
 
-## Sprint 6 — Validação com serviços reais (próxima)
+## Caminho até a versão 1.0 em produção
+
+Planejado em 2026-11-15 a pedido do dono do produto; ADR-015, ADR-016 e Discord depois da 1.0
+aceitos pelo dono no mesmo dia. Ordem: primeiro o que mexe em segurança e
+dados de usuário (7), depois o agente (8), depois a capacidade para N usuários (9), que define a
+topologia final dos containers; só então Windows (10), que depende dessa topologia, e a
+implantação (11). A Sprint 6 depende de contas de Zoom/Teams e de credenciais reais e pode
+correr em paralelo às demais.
+
+```
+S6 validação real ──────────────────────────────┐
+S7 contas/sessões ─► S8 LangGraph ─► S9 fila/N usuários ─► S10 Windows ─► S11 v1.0 em produção
+```
+
+## Sprint 6 — Validação com serviços reais
 
 | Id | Tipo | Tarefa | Pronto quando |
 |----|------|--------|---------------|
@@ -171,16 +184,98 @@ Saída: duas contas, cada uma enviando o bot a uma reunião e vendo só a própr
 | S6-2 | feat | Nome de quem fala no Teams e no Zoom (legendas de cada um) | Transcrição com nomes fora do Meet |
 | S6-3 | chore | E-mail de tarefas com SMTP real | E-mail recebido numa caixa de verdade |
 | S6-4 | chore | Google Calendar com a API real | Título do bot vindo de um evento da agenda |
-| S6-5 | feat | Recuperação de senha por e-mail e limite de tentativas de login | Pré-requisito para expor a API |
-| S6-6 | feat | Discord por bot oficial (token do Developer Portal) | Canal de voz gravado e resumido |
-| S6-7 | chore | venv local em Python 3.11; CI verde no GitHub | Mesma versão no host e nos containers |
+| S6-5 | — | Movida para a Sprint 7 (S7-5), junto do resto das contas | — |
+| S6-6 | — | Discord: movido para depois da 1.0 (é outra arquitetura de captura e não bloqueia nada) | — |
+| S6-7 | chore | venv local em Python 3.11; CI verde no GitHub | CI verde desde 2026-11-15 (2 execuções). **Falta** o venv 3.11 |
 
-## Fica para a implantação em produção
+## Sprint 7 — Contas, sessões e isolamento por perfil (ADR-011)
 
-Servidor limpo a partir do repositório (critério de saída da Sprint 3), HTTPS, domínio e
-`ALLOWED_ORIGINS` do front novo.
+**Implementada em 2026-11-15.** Tudo coberto por testes e validado no navegador, menos o e-mail de
+recuperação com SMTP real (S7-5), que não foi disparado. Detalhes em "Ampliação da Sprint 7", na ADR-011.
 
-## Fora do roteiro por enquanto
+Objetivo: cada usuário controla as próprias sessões, e reuniões de perfis diferentes nunca se
+misturam, nem quando dois usuários usam o mesmo link ao mesmo tempo.
 
-Mais de uma organização (times com reuniões compartilhadas) e o front novo em si: o contrato
-está em `docs/api/openapi.json` (ADR-013).
+Estado conferido em 2026-11-15: reuniões já têm dono (`owner_id`) e cada usuário só vê as suas.
+Faltam índice no banco, regra para links repetidos e o controle de sessões. No Streamlit cada F5
+pede login e abre uma sessão nova, que fica no banco até vencer: é a origem do acúmulo.
+
+| Id | Tipo | Tarefa | Pronto quando |
+|----|------|--------|---------------|
+| S7-1 | fix | Streamlit mantém a sessão ao atualizar a página (token em cookie, validado no banco) | F5 não pede login nem cria sessão nova |
+| S7-2 | feat | "Minhas sessões": lista as sessões ativas do usuário (aparelho, IP, data) com **Encerrar** e **Encerrar todas as outras**; rotas `GET/DELETE /auth/sessions` | Só afeta sessões do próprio usuário; pede confirmação; a sessão atual continua; nunca mostra o token |
+| S7-3 | feat | Papel `admin` (a primeira conta) com botão **Limpar sessões**: vencidas, de um usuário, ou todas menos a sua | Exige digitar a confirmação; grava quem limpou e quantas, no log; nunca apaga usuários nem reuniões |
+| S7-4 | feat | Isolamento por perfil: índice `owner_id + started_at`; o mesmo usuário não envia o bot duas vezes ao mesmo link em andamento (409); dois usuários no mesmo link recebem cada um a sua reunião, com chat e tarefas próprios | Teste com dois usuários simultâneos no mesmo link: duas reuniões, nenhum dado cruzado |
+| S7-5 | feat | (era S6-5) Recuperação de senha por e-mail, troca de senha e limite de tentativas de login | Cinco senhas erradas bloqueiam por alguns minutos; link de recuperação expira |
+
+Saída: dois usuários, cada um em seu navegador, com sessões e reuniões independentes; o admin
+limpa as sessões vencidas sem afetar ninguém logado.
+
+## Sprint 8 — Agente com LangGraph e contrato (ADR-014)
+
+Objetivo: o chat e o resumo viram um grafo explícito (LangGraph) que aplica o contrato do agente
+em cada resposta, sem perder o que a ADR-010 resolveu para reuniões longas.
+
+| Id | Tipo | Tarefa | Pronto quando |
+|----|------|--------|---------------|
+| S8-1 | chore | **Receber o contrato do agente** e versioná-lo em `docs/agent/contrato.md` | Arquivo no repositório. **Bloqueia o resto da sprint** |
+| S8-2 | chore | Conjunto de avaliação: perguntas de controle com resposta esperada (reunião curta, de 2 h, pergunta sem resposta na reunião) rodando contra o agente atual | Linha de base registrada antes da migração |
+| S8-3 | refactor | Chat como grafo: selecionar trechos → responder → verificar o contrato → refazer ou responder "não foi mencionado" | Mesma porta `ILLMService`; casos de uso sem mudança; avaliação igual ou melhor |
+| S8-4 | refactor | Resumo como grafo: dividir → resumir partes → reunir → validar o JSON → refazer a parte que falhou | Reunião de 2 h sem erro; nenhum resumo com JSON inválido |
+| S8-5 | chore | Remover o que sobrar do LangChain e travar `langgraph` no `requirements.in` | Build e CI verdes; imagem não cresce sem motivo |
+
+Saída: avaliação com o contrato respeitado em todas as perguntas de controle e sem regressão
+frente à linha de base.
+
+## Sprint 9 — Concorrência e fila para N usuários (ADR-015)
+
+Objetivo: com vários usuários ao mesmo tempo, ninguém espera atrás da reunião longa de outro e a
+API continua respondendo rápido.
+
+Estado medido em 2026-11-15: a API roda num processo; o worker de processamento e o do bot rodam
+um trabalho por vez; o Ollama atende um pedido por vez. Nada se perde (a fila é o Redis), mas
+o tempo de espera cresce em fila única: uma reunião de 2 h segura todas as outras.
+
+| Id | Tipo | Tarefa | Pronto quando |
+|----|------|--------|---------------|
+| S9-1 | chore | Teste de carga com N usuários simulados (envio de áudio, bot, chat, consultas de status) | Números de base na ADR-015: latência da API, espera na fila, vazão |
+| S9-2 | feat | Filas por etapa: transcrição, LLM e bot, cada uma com seus workers e concorrência própria; workers escaláveis no compose (`--scale`) | Transcrição de um usuário não espera o resumo de outro |
+| S9-3 | feat | Justiça entre usuários: limite de trabalhos em andamento por usuário e limite de pedidos por minuto na API | Um usuário com 10 envios não atrasa o primeiro envio de outro |
+| S9-4 | feat | API com vários processos (`uvicorn --workers`) e chat com limite de chamadas simultâneas ao LLM | p95 das rotas de leitura abaixo da meta da ADR-015 sob carga |
+| S9-5 | feat | Vários bots em paralelo: um worker por perfil de Chrome (`BOT_PROFILES`) | Duas reuniões gravadas ao mesmo tempo |
+| S9-6 | feat | Posição na fila em `GET /meetings/{id}/status` | O front mostra "3º na fila" |
+
+Saída: o teste de carga com a meta da ADR-015 passa, sem tarefa perdida e sem dado cruzado entre usuários.
+
+## Sprint 10 — Windows via Docker (ADR-016)
+
+Objetivo: subir o sistema completo numa máquina Windows só com Docker Desktop, seguindo o README.
+
+| Id | Tipo | Tarefa | Pronto quando |
+|----|------|--------|---------------|
+| S10-1 | feat | Bot em container: Chromium com tela virtual, perfil do bot num volume, login feito uma vez pelo navegador (noVNC) | Bot grava uma reunião sem nada instalado no host além do Docker |
+| S10-2 | chore | `.gitattributes` com fim de linha LF para scripts e arquivos de container | Clone no Windows sobe sem erro de `\r` |
+| S10-3 | chore | Backup e restauração como comandos do compose (sem `bash` no host) | Mesmo comando no Windows, macOS e Linux |
+| S10-4 | chore | CI com job em Windows para os testes unitários | CI verde em `windows-latest` |
+| S10-5 | chore | README para Windows: WSL2, onde clonar (dentro do WSL2, por desempenho), Ollama no host | Alguém sobe o ambiente no Windows só com o README |
+
+Saída: Windows 11 com Docker Desktop, do clone à reunião resumida, sem passo fora do README.
+
+## Sprint 11 — Versão 1.0 em produção
+
+| Id | Tipo | Tarefa | Pronto quando |
+|----|------|--------|---------------|
+| S11-1 | chore | Servidor limpo a partir do repositório (critério de saída da Sprint 3) | `docker compose up` num servidor novo |
+| S11-2 | chore | HTTPS e domínio com proxy reverso; `ALLOWED_ORIGINS` do front | Certificado válido; API só por HTTPS |
+| S11-3 | chore | Segredos fora do repositório; cadastro fechado (`ALLOW_REGISTRATION=false`); `API_KEY` trocada | Checklist de segurança assinado |
+| S11-4 | chore | Backup agendado e restauração testada no servidor; alerta quando `/health` falhar | Restauração cronometrada; alerta recebido num teste |
+| S11-5 | chore | Teste de carga da Sprint 9 contra o servidor | Meta da ADR-015 atingida em produção |
+| S11-6 | chore | Tag `v1.0.0`, notas da versão e roteiro de operação (restaurar, trocar chave, reiniciar bot) | Tag publicada |
+
+Saída: v1.0.0 no ar, com usuários reais gravando reuniões.
+
+## Depois da 1.0
+
+- Discord por bot oficial (era S6-6; ADR-012).
+- Mais de uma organização (times com reuniões compartilhadas).
+- O front novo em si: o contrato está em `docs/api/openapi.json` (ADR-013).

@@ -79,6 +79,9 @@ próprias reuniões) ou `X-API-Key` (chave de serviço, vê tudo).
 |------|--------|
 | `POST /auth/register`, `/auth/login` | Cria conta ou entra; devolvem o `token` da sessão |
 | `POST /auth/logout`, `GET /auth/me` | Encerra a sessão; usuário atual |
+| `GET/DELETE /auth/sessions` | Minhas sessões; encerra uma ou todas as outras |
+| `POST /auth/password`, `/password/forgot`, `/password/reset` | Troca de senha e recuperação por código no e-mail |
+| `GET /admin/users`, `POST /admin/sessions/purge` | Só admin (a primeira conta): usuários e limpeza de sessões |
 | `GET /config` | O que está ligado: cadastro, e-mail, agenda, plataformas (sem autenticação) |
 | `GET /health` | Confere banco e fila; 503 se algum não responde |
 | `GET /meetings/` | Lista as reuniões do usuário |
@@ -146,8 +149,10 @@ No Teams e no Zoom o bot entra como convidado pelo navegador, com o nome `BOT_NA
 - Reuniões longas são resumidas em partes e o chat consulta só os trechos ligados à pergunta
   (ADR-010). `LLM_CONTEXT_CHARS` ajusta o tamanho de cada parte.
 - O worker do bot grava uma reunião por vez.
-- Login: sem limite de tentativas, confirmação de e-mail ou recuperação de senha (ADR-011).
-  Resolver antes de expor a API fora da máquina. No Streamlit, atualizar a página pede login de novo.
+- Login: 5 senhas erradas bloqueiam por 15 minutos; não há confirmação de e-mail no cadastro.
+  A recuperação de senha exige SMTP configurado.
+- Dois usuários que mandam o bot ao mesmo link compartilham uma gravação; cada um recebe a
+  própria reunião quando ela termina.
 
 ## Testes e dependências
 
