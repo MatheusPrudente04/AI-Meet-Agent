@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 import requests
@@ -33,9 +34,37 @@ class ModelClient:
         except Exception as exc:
             raise LLMServiceError(f"Falha ao chamar o modelo: {exc}") from exc
 
+    def complete_tools(self, messages: list[dict], tools: list[dict]) -> tuple[str, Optional[dict]]:
+        """Resposta em texto ou o pedido de UMA ferramenta: (texto, {"name", "arguments"} | None).
+        `tools` no formato de função da OpenAI, que o Ollama também aceita."""
+        try:
+            if self.ollama:
+                message = self._ollama_message(messages, as_json=False, tools=tools)
+                calls = message.get("tool_calls") or []
+                call = calls[0]["function"] if calls else None
+                if call and isinstance(call.get("arguments"), str):
+                    call = {**call, "arguments": json.loads(call["arguments"])}
+                return message.get("content") or "", call and {"name": call["name"], "arguments": call["arguments"]}
+            self._ensure_openai()
+            resp = self._openai.chat.completions.create(model=self._model, messages=messages, temperature=0.2,
+                                                         tools=tools)
+            message = resp.choices[0].message
+            if message.tool_calls:
+                fn = message.tool_calls[0].function
+                return message.content or "", {"name": fn.name, "arguments": json.loads(fn.arguments or "{}")}
+            return message.content or "", None
+        except LLMServiceError:
+            raise
+        except Exception as exc:
+            raise LLMServiceError(f"Falha ao chamar o modelo: {exc}") from exc
+
     def _ollama(self, messages: list[dict], as_json: bool) -> str:
-        # ~2,6 caracteres por token em português (medido); 2,4 dá folga.
-        needed = int(sum(len(m["content"]) for m in messages) / 2.4) + NUM_PREDICT
+        return self._ollama_message(messages, as_json)["content"]
+
+    def _ollama_message(self, messages: list[dict], as_json: bool, tools: Optional[list[dict]] = None) -> dict:
+        # ~2,6 caracteres por token em português (medido); 2,4 dá folga. As ferramentas também ocupam a janela.
+        chars = sum(len(m["content"]) for m in messages) + (len(json.dumps(tools)) if tools else 0)
+        needed = int(chars / 2.4) + NUM_PREDICT
         if needed > self._s.ollama_num_ctx_max:
             raise LLMServiceError(
                 f"Contexto de ~{needed} tokens excede o limite configurado "
@@ -51,12 +80,20 @@ class ModelClient:
         }
         if as_json:
             payload["format"] = "json"
+        if tools:
+            payload["tools"] = tools
         base = self._s.ollama_base_url.rstrip("/").removesuffix("/v1")
         resp = requests.post(f"{base}/api/chat", json=payload, timeout=600)
         resp.raise_for_status()
-        return resp.json()["message"]["content"]
+        return resp.json()["message"]
 
     def _compatible(self, messages: list[dict], as_json: bool) -> str:
+        self._ensure_openai()
+        extra: dict = {"response_format": {"type": "json_object"}} if as_json else {}
+        resp = self._openai.chat.completions.create(model=self._model, messages=messages, temperature=0.2, **extra)
+        return resp.choices[0].message.content or ""
+
+    def _ensure_openai(self) -> None:
         if self._openai is None:
             from openai import OpenAI
             if self._s.llm_provider == "openrouter":
@@ -68,6 +105,3 @@ class ModelClient:
             else:
                 self._openai = OpenAI(api_key=self._s.openai_api_key)
                 self._model = self._s.openai_model
-        extra: dict = {"response_format": {"type": "json_object"}} if as_json else {}
-        resp = self._openai.chat.completions.create(model=self._model, messages=messages, temperature=0.2, **extra)
-        return resp.choices[0].message.content or ""

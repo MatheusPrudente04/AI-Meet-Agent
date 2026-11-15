@@ -20,6 +20,8 @@ class MongoMeetingRepository(IMeetingRepository):
             self._col.create_index([("owner_id", 1), ("started_at", -1)])
             self._col.create_index("meeting_url")
             self._col.create_index("source_id")
+            # Posição na fila (ADR-015): consultada a cada atualização de status; só as que esperam.
+            self._col.create_index("queue", partialFilterExpression={"queue": {"$gt": ""}})
             self._indexed = True
         doc = meeting_to_dict(meeting)
         doc["_id"] = doc.pop("id")

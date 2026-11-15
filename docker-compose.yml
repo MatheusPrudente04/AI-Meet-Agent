@@ -64,6 +64,52 @@ services:
     ports:
       - "8501:8501"
 
+  # Bot em container (S10-1, ADR-016). Opcional enquanto o worker do host existir: os dois
+  # consomem a fila "bot". Login da conta do bot, uma vez:
+  #   docker compose --profile bot run --rm --service-ports bot python -m infrastructure.recorder.bot_setup
+  #   → abra http://localhost:6080/vnc.html
+  # Depois: docker compose --profile bot up -d bot
+  bot:
+    <<: *app
+    image: meet-agent-bot
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    profiles: ["bot"]
+    command: python main.py --bot-worker
+    environment:
+      <<: *app-env
+      CAPTURE_ENDPOINT: http://api:8000   # o navegador do bot fala com a API pela rede do compose
+      BOT_CHROME_PROFILE: /home/bot/profile
+      BOT_HEADLESS: "false"
+    volumes:
+      - ./data:/app/data
+      - bot_profile:/home/bot/profile     # login do Google da conta do bot
+    ports:
+      - "127.0.0.1:6080:6080"             # noVNC, só nesta máquina
+    shm_size: 1gb                         # o Chromium usa /dev/shm; o padrão de 64 MB derruba abas
+
+  # Ferramenta, não sobe com `up` (perfil tools). Mesmo comando em Windows, macOS e Linux (S10-3):
+  #   docker compose run --rm backup                    → backups/mongo-<data>.archive.gz
+  #   docker compose run --rm backup restore backups/<arquivo>
+  backup:
+    image: mongo:7
+    profiles: ["tools"]
+    working_dir: /app
+    entrypoint: ["bash", "scripts/mongo_backup.sh"]
+    environment:
+      TZ: America/Sao_Paulo
+      MONGO_URI: mongodb://mongo:27017
+      AUDIO_RETENTION_DAYS: ${AUDIO_RETENTION_DAYS:-30}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - ./backups:/app/backups
+      - ./data/audio:/app/data/audio
+    depends_on:
+      mongo:
+        condition: service_healthy
+
   redis:
     image: redis:7-alpine
     ports:
@@ -94,3 +140,4 @@ volumes:
   redis_data:
   mongo_data:
   model_cache:
+  bot_profile:

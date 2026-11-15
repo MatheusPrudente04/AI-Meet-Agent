@@ -145,3 +145,80 @@ def test_redis_fora_nao_derruba_a_api(monkeypatch):
     _limits(monkeypatch, 1, Down())
     for _ in range(3):
         security.rate_limited(_user("ana"))
+
+
+class BotContainer:
+    """dispatch_bot de verdade, com o Celery interceptado e a trava trocável."""
+    dispatch_bot = Container.dispatch_bot
+    bot_status = Container.bot_status
+    bot_account = None
+    _follow = Container._follow
+    _title_from_calendar = Container._title_from_calendar
+    calendar = None
+    _is_collab = True
+
+    def __init__(self, repo, lock):
+        self.repository, self._lock = repo, lock
+
+    def _link_lock(self, key):
+        return self._lock
+
+
+def _race(repo, monkeypatch, lock):
+    import contextlib
+    import threading
+    import time
+    import worker.tasks as tasks
+    bots = []
+    monkeypatch.setattr(tasks.join_meeting_task, "delay", lambda *a: bots.append(a))
+    slow_find = repo.find_by
+
+    def find_by(**f):  # alarga a janela entre "conferir" e "gravar"
+        found = slow_find(**f)
+        time.sleep(0.05)
+        return found
+    monkeypatch.setattr(repo, "find_by", find_by)
+    c = BotContainer(repo, lock or contextlib.nullcontext())
+    ts = [threading.Thread(target=c.dispatch_bot, args=("https://meet.google.com/abc-defg-hij", "T", who))
+          for who in ("ana", "bia")]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    return bots, repo.list_all()
+
+
+def test_sem_trava_dois_envios_simultaneos_criam_dois_bots(repo, monkeypatch):
+    bots, _ = _race(repo, monkeypatch, lock=None)
+    assert len(bots) == 2  # o defeito que a trava corrige
+
+
+def test_com_trava_dois_envios_simultaneos_viram_um_bot_e_um_seguidor(repo, monkeypatch):
+    import threading
+    bots, meetings = _race(repo, monkeypatch, lock=threading.Lock())
+    assert len(bots) == 1
+    assert sorted(bool(m.source_id) for m in meetings) == [False, True]
+
+
+def test_health_aponta_etapa_sem_worker(monkeypatch):
+    import api.main as main
+    import worker.tasks as tasks
+
+    class Inspect:
+        def __init__(self, replies): self.replies = replies
+        def active_queues(self): return self.replies
+
+    replies = {"transcribe@h": [{"name": "transcribe"}]}
+    monkeypatch.setattr(tasks.celery_app.control, "inspect", lambda timeout: Inspect(replies))
+    assert main._workers() == {"worker_transcribe": "ok", "worker_llm": "sem worker", "bot": "sem worker"}
+    replies = None  # nenhum worker respondeu
+    monkeypatch.setattr(tasks.celery_app.control, "inspect", lambda timeout: Inspect(replies))
+    assert set(main._workers().values()) == {"sem worker"}
+
+
+def test_alerta_so_na_mudanca_de_estado(tmp_path, monkeypatch):
+    import scripts.health_alert as alert
+    sent, results = [], iter([(False, "HTTP 503: {}"), (False, "HTTP 503: {}"), (True, "{}"), (True, "{}")])
+    monkeypatch.setattr(alert, "check", lambda url: next(results))
+    state = tmp_path / "s"
+    send = lambda subject, body: sent.append(subject)
+    assert [alert.run("u", state, send) for _ in range(4)] == [False, False, True, True]
+    assert sent == ["API fora do ar", "API de volta"]

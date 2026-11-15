@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     mongo_uri: str = "mongodb://mongo:27017/meetagent"
     mongo_db: str = "meetagent"
     audio_storage_path: str = "data/audio"
+    documents_path: str = "data/documents"   # arquivos gerados pelo chat (create_document)
 
     # ── Cache e API ───────────────────────────────────────────────────
     redis_url: str = "redis://localhost:6379/0"
@@ -93,6 +94,12 @@ class Settings(BaseSettings):
     bot_debug_dom: bool = False
     # Endereço da API visto pelo navegador do bot (vazio = http://127.0.0.1:API_PORT)
     capture_endpoint: str = ""
+    # Credenciamento pela interface (botão "Credenciar bot"). Com e-mail e senha da conta do bot,
+    # o login é tentado sozinho; sem eles, ou se o Google pedir verificação, alguém conclui pela
+    # tela do bot (noVNC) em BOT_VNC_URL.
+    bot_google_email: str = ""
+    bot_google_password: str = ""
+    bot_vnc_url: str = "http://localhost:6080/vnc.html?autoconnect=true&resize=scale"
 
     # ── SMTP / E-mail ─────────────────────────────────────────────────
     smtp_host: str = "smtp.gmail.com"
@@ -100,6 +107,8 @@ class Settings(BaseSettings):
     smtp_user: str = ""
     smtp_password: str = ""
     smtp_from_email: str = ""
+    # Quem recebe o alerta de /health fora do ar (scripts/health_alert.py, S11-4)
+    alert_email: str = ""
 
     # ── Properties ───────────────────────────────────────────────────
 

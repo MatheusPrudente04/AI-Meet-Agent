@@ -15,6 +15,39 @@
         "title": "Body_upload_meeting_meetings_upload_post",
         "type": "object"
       },
+      "BotStatusResponse": {
+        "properties": {
+          "message": {
+            "default": "",
+            "title": "Message",
+            "type": "string"
+          },
+          "status": {
+            "description": "ready libera o envio do bot. creating: credenciando. waiting_login: alguém precisa concluir o login na tela do bot (vnc_url). unknown/not_configured/error: credenciar.",
+            "enum": [
+              "unknown",
+              "creating",
+              "waiting_login",
+              "ready",
+              "not_configured",
+              "error"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "vnc_url": {
+            "default": "",
+            "description": "Tela do navegador do bot (noVNC), para concluir o login",
+            "title": "Vnc Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "BotStatusResponse",
+        "type": "object"
+      },
       "ChangePasswordRequest": {
         "properties": {
           "current_password": {
@@ -36,8 +69,91 @@
         "title": "ChangePasswordRequest",
         "type": "object"
       },
+      "ChatActionSchema": {
+        "description": "Ação que o agente preparou no chat. E-mail: `pending` até POST .../send ou .../cancel.\nDocumento: `created`, baixar em GET .../document.",
+        "properties": {
+          "body": {
+            "default": "",
+            "title": "Body",
+            "type": "string"
+          },
+          "filename": {
+            "default": "",
+            "title": "Filename",
+            "type": "string"
+          },
+          "format": {
+            "default": "",
+            "description": "pdf, docx, xlsx, csv, html ou md (documento)",
+            "title": "Format",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "sent_at": {
+            "default": "",
+            "title": "Sent At",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "sent",
+              "canceled",
+              "created"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "subject": {
+            "default": "",
+            "title": "Subject",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          },
+          "to": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "To",
+            "type": "array"
+          },
+          "type": {
+            "enum": [
+              "email",
+              "document"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "status"
+        ],
+        "title": "ChatActionSchema",
+        "type": "object"
+      },
       "ChatMessage": {
         "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatActionSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "content": {
             "title": "Content",
             "type": "string"
@@ -92,6 +208,17 @@
       },
       "ChatResponse": {
         "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatActionSchema"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Presente quando o pedido foi uma ação: e-mail para confirmar ou documento gerado"
+          },
           "answer": {
             "title": "Answer",
             "type": "string"
@@ -182,6 +309,12 @@
           },
           "description": {
             "title": "Description",
+            "type": "string"
+          },
+          "status": {
+            "default": "",
+            "description": "aprovada, condicionada, proposta, pendente, rejeitada ou inconclusiva; vazio em resumos anteriores ao contrato do agente",
+            "title": "Status",
             "type": "string"
           }
         },
@@ -317,6 +450,12 @@
             "title": "Platform",
             "type": "string"
           },
+          "queue_position": {
+            "default": 0,
+            "description": "Só em GET /meetings/{id}/status: posição na fila da etapa atual (1 = é a próxima; 0 = não está esperando)",
+            "title": "Queue Position",
+            "type": "integer"
+          },
           "started_at": {
             "format": "date-time",
             "title": "Started At",
@@ -400,6 +539,12 @@
             "description": "meet, teams ou zoom; vazio para áudio enviado",
             "title": "Platform",
             "type": "string"
+          },
+          "queue_position": {
+            "default": 0,
+            "description": "Só em GET /meetings/{id}/status: posição na fila da etapa atual (1 = é a próxima; 0 = não está esperando)",
+            "title": "Queue Position",
+            "type": "integer"
           },
           "started_at": {
             "format": "date-time",
@@ -1325,6 +1470,72 @@
         ]
       }
     },
+    "/bot/setup": {
+      "post": {
+        "description": "Abre o navegador do bot e conecta a conta do Google: sozinho com BOT_GOOGLE_EMAIL e\nBOT_GOOGLE_PASSWORD no .env, ou pedindo para alguém concluir na tela do bot (vnc_url)\nquando não há senha configurada ou o Google pede verificação. Acompanhe por GET /bot/status.",
+        "operationId": "setup_bot_bot_setup_post",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BotStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "description": "Só o administrador credencia o bot"
+          },
+          "409": {
+            "description": "Sem fila do bot (modo solo)"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Credencia o bot",
+        "tags": [
+          "bot"
+        ]
+      }
+    },
+    "/bot/status": {
+      "get": {
+        "description": "Consultar a cada poucos segundos enquanto status for creating ou waiting_login.",
+        "operationId": "bot_status_bot_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BotStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "O bot está credenciado?",
+        "tags": [
+          "bot"
+        ]
+      }
+    },
     "/capture/chunk": {
       "post": {
         "operationId": "receive_chunk_capture_chunk_post",
@@ -1520,7 +1731,7 @@
     },
     "/health": {
       "get": {
-        "description": "Confere as dependências de verdade: 503 se o banco ou a fila não respondem.",
+        "description": "Confere as dependências de verdade: 503 se o banco ou a fila não respondem, ou se\numa etapa (`worker_transcribe`, `worker_llm`) está sem worker. `bot` só informa.",
         "operationId": "health_health_get",
         "responses": {
           "200": {
@@ -1532,7 +1743,7 @@
             "description": "Successful Response"
           }
         },
-        "summary": "Saúde do banco e da fila",
+        "summary": "Saúde do banco, da fila e dos workers",
         "tags": [
           "sistema"
         ]
@@ -1598,10 +1809,13 @@
             "description": "Successful Response"
           },
           "409": {
-            "description": "Você já mandou o bot a este link e a reunião não acabou"
+            "description": "Você já mandou o bot a este link e a reunião não acabou, ou o bot não foi credenciado"
           },
           "422": {
             "description": "Link não reconhecido ou plataforma sem suporte"
+          },
+          "429": {
+            "description": "Acima de RATE_LIMIT_PER_MINUTE pedidos por minuto (cabeçalho Retry-After)"
           }
         },
         "security": [
@@ -1670,6 +1884,9 @@
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Acima de RATE_LIMIT_PER_MINUTE pedidos por minuto (cabeçalho Retry-After)"
           }
         },
         "security": [
@@ -1787,9 +2004,239 @@
         ]
       }
     },
-    "/meetings/{meeting_id}/chat": {
+    "/meetings/{meeting_id}/actions/{action_id}/cancel": {
       "post": {
-        "description": "A pergunta e a resposta entram em `chat_history` da reunião (GET /meetings/{id}).",
+        "operationId": "cancel_email_action_meetings__meeting_id__actions__action_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "meeting_id",
+            "required": true,
+            "schema": {
+              "title": "Meeting Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "action_id",
+            "required": true,
+            "schema": {
+              "title": "Action Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatActionSchema"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Reunião ou ação não encontrada"
+          },
+          "409": {
+            "description": "E-mail já enviado ou descartado, ou SMTP indisponível"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Descarta o e-mail preparado no chat",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/meetings/{meeting_id}/actions/{action_id}/document": {
+      "get": {
+        "operationId": "download_document_meetings__meeting_id__actions__action_id__document_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "meeting_id",
+            "required": true,
+            "schema": {
+              "title": "Meeting Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "action_id",
+            "required": true,
+            "schema": {
+              "title": "Action Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Reunião ou documento não encontrado"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Baixa o documento gerado no chat",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/meetings/{meeting_id}/actions/{action_id}/send": {
+      "post": {
+        "operationId": "send_email_action_meetings__meeting_id__actions__action_id__send_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "meeting_id",
+            "required": true,
+            "schema": {
+              "title": "Meeting Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "action_id",
+            "required": true,
+            "schema": {
+              "title": "Action Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatActionSchema"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Reunião ou ação não encontrada"
+          },
+          "409": {
+            "description": "E-mail já enviado ou descartado, ou SMTP indisponível"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Envia o e-mail preparado no chat",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/meetings/{meeting_id}/chat": {
+      "delete": {
+        "description": "Apaga `chat_history`, os documentos gerados no chat e os e-mails não enviados.\nResumo, transcrição e tarefas continuam.",
+        "operationId": "clear_chat_meetings__meeting_id__chat_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "meeting_id",
+            "required": true,
+            "schema": {
+              "title": "Meeting Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Reunião não existe ou é de outro usuário"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Limpa a conversa da reunião",
+        "tags": [
+          "chat"
+        ]
+      },
+      "post": {
+        "description": "A pergunta e a resposta entram em `chat_history` da reunião (GET /meetings/{id}).\n\nPedidos de ação viram `action` na resposta: \"mande isso para ana@empresa.com\" prepara um\ne-mail (só para endereços escritos pelo usuário) que espera POST .../actions/{id}/send;\n\"gere um PDF/Word da ata\" gera o arquivo, baixado em GET .../actions/{id}/document.",
         "operationId": "chat_meetings__meeting_id__chat_post",
         "parameters": [
           {
@@ -1828,6 +2275,12 @@
           },
           "422": {
             "description": "Reunião ainda não foi transcrita"
+          },
+          "429": {
+            "description": "Acima de RATE_LIMIT_PER_MINUTE pedidos por minuto (cabeçalho Retry-After)"
+          },
+          "503": {
+            "description": "O LLM está ocupado com outras perguntas; tente de novo"
           }
         },
         "security": [
@@ -2168,6 +2621,10 @@
     {
       "description": "Configuração para o front e verificação de saúde. Sem autenticação.",
       "name": "sistema"
+    },
+    {
+      "description": "Credenciamento da conta do Google do bot: o envio do bot só é liberado com status ready.",
+      "name": "bot"
     },
     {
       "description": "Uso interno do bot (áudio em chunks). O front não chama.",

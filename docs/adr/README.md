@@ -22,8 +22,10 @@ Uma ADR só vira código depois de aceita. Ao aceitar, troque o status e a data 
 | 012 | Bot multiplataforma (Meet, Teams, Zoom; Discord adiado) | Aceita; Meet validado, Teams e Zoom não | 5 | Sim |
 | 013 | Contrato OpenAPI para um novo front | Aceita, implementada em 2026-11-15 | 5 | Sim |
 | 014 | Agente em LangGraph com contrato verificável | Aceita, implementada em 2026-11-15 | 8 | Sim |
-| 015 | Concorrência: filas por etapa e justiça entre usuários | Aceita em 2026-11-15 | 9 | Sim |
-| 016 | Bot em container (Windows e servidor) | Aceita em 2026-11-15 | 10 | Sim |
+| 015 | Concorrência: filas por etapa e justiça entre usuários | Aceita, implementada em 2026-11-15 | 9 | Sim |
+| 016 | Bot em container (Windows e servidor) | Aceita, implementada em 2026-11-15 (falta Windows) | 10 | Sim |
+| 017 | Ferramentas do agente no chat: e-mail e documentos | Implementada em 2026-11-15 | — | Sim |
+| 018 | Credenciamento do bot pela interface | Implementada em 2026-11-15 | — | Sim |
 
 ### Desvios na implementação da Sprint 1
 
@@ -660,3 +662,99 @@ validar cedo, na S10-1. Áudio no container precisa de um servidor de som virtua
 para a aba tocar; validar a captura antes de seguir.
 
 **Reverte-se assim.** O worker do host continua funcionando; o container do bot é um serviço a mais no compose.
+
+**Como ficou (2026-11-15, parcial).** Adaptadores feitos sem Docker: `.gitattributes` (LF em todo
+texto); backup e restauração no serviço `backup` do compose (perfil `tools`, imagem `mongo:7`,
+script `scripts/mongo_backup.sh`), com `scripts/backup.sh` reduzido a atalho; job de testes em
+`windows-latest` no CI; seção Windows no README. Bot em container (S10-1), 2026-11-15: `Dockerfile.bot` (Python 3.11 + Chromium 159 do
+Playwright 1.65, Xvfb, PulseAudio com saída nula, noVNC na 6080 só em 127.0.0.1), serviço `bot`
+no compose (perfil `bot`), perfil do Chrome no volume `bot_profile`, extensão com permissão para
+`http://api/*`. Os riscos da ADR se confirmaram favoráveis: **o Google aceitou o login da conta do
+bot feito pelo noVNC** e a fumaça (`run_bot --smoke 30`) passou nas 4 checagens (áudio de 488 KB
+em 30 s, legendas, presentes, bloco do bot). Reunião completa pela fila (3 min 30 s, 1
+pessoa) chegou ao resumo com o nome em todas as falas, depois de uma correção: o filtro
+anti-alucinação descartava trecho com `no_speech_prob > 0,6` mesmo com confiança alta
+(`avg_logprob` ≈ -0,27), e o áudio do container vem com `no_speech_prob` de 0,62 a 0,88 em fala
+nítida. Agora vale a regra do Whisper (silêncio só com confiança baixa). Falta o teste num Windows.
+
+
+---
+
+## ADR-017 — Ferramentas do agente no chat: e-mail e documentos
+
+**Status.** Implementada em 2026-11-15, a pedido do dono do produto.
+
+**Contexto.** O chat só respondia em texto. O pedido foi que o agente também envie e-mails e
+gere documentos (PDF, Word) a partir da reunião.
+
+**Decisão.**
+- Chamada de ferramenta nativa do modelo (`tools` no Ollama e no protocolo da OpenAI), dentro do
+  mesmo grafo do chat: o nó "responder" pode devolver texto ou o pedido de **uma** ferramenta.
+  Testado com `qwen2.5:7b`: escolhe a ferramenta certa e responde em texto quando não há ação.
+- `send_email(to, subject, body)` **não envia**: prepara um rascunho `pending` que o usuário
+  confirma (botão Enviar ou `POST /meetings/{id}/actions/{aid}/send`). Destinatário só vale se
+  o próprio usuário o escreveu na conversa; endereço inventado pelo modelo é recusado.
+- `create_document(format, title, content)` gera na hora PDF (fpdf2), Word (python-docx) ou
+  Markdown em `data/documents/<reunião>/<ação>.<ext>`, com nome de arquivo montado só com ids;
+  baixa em `GET .../actions/{aid}/document`; apagado junto com a reunião.
+- O texto do e-mail e do documento passa pela mesma verificação de contrato que uma resposta
+  (citação inventada, falas trocadas…). Títulos e cabeçalhos entre aspas não contam como
+  citação; aspas depois de "disse", "Nome:" etc. contam.
+- A ação fica na mensagem do assistente em `chat_history[].action`. Para o modelo, essa mensagem
+  vira uma nota "o sistema executou a ferramenta": com a confirmação literal no histórico, o
+  modelo passou a escrever "Gerei o documento…" sem chamar a ferramenta. O verificador também
+  barra essa frase quando não houve ferramenta.
+
+**Medição (2026-11-15).** Conversa contínua de 7 pedidos (4 documentos, e-mail com endereço,
+e-mail sem endereço, pergunta comum): 7/7. Avaliação do contrato (`scripts/eval_agent`): 7/8 numa
+rodada; a pergunta que falhou ("todos concordaram?") passou 4/4 repetida, ou seja, variação do
+modelo, não regressão das ferramentas.
+
+**Ampliação (2026-11-15): xlsx, CSV e HTML.** Planilhas saem das tabelas Markdown (uma aba
+por tabela no Excel, números como número; CSV com `;` e BOM, que o Excel em português abre
+direto). HTML é página única, sem nada externo, com um gráfico de barras (SVG) por tabela com
+coluna numérica; texto do modelo sempre escapado. PDF e Word passaram a ter tabela de verdade.
+O modelo nem sempre escreve tabela: às vezes manda HTML pronto (até com `<img>` de gráfico de
+mentira), CSV direto ou "Ana: 6 falas"; o gerador converte esses três em tabela. E conta mal:
+"falas por participante" saiu 3/2/1 com 6/4/3 na transcrição. Por isso o contexto do chat
+traz **números contados pelo sistema** (falas por participante, tarefas por responsável,
+decisões por estado), e um dashboard HTML sem tabela recebe esses números numa seção
+"Números da reunião". Medido: 5/5 dashboards com gráfico e números certos.
+
+**Alternativas descartadas.** Envio direto sem confirmação (o modelo escolhe conteúdo e, sem a
+regra, destinatário: risco de mandar dado de reunião para fora por engano). Detectar intenção
+por palavra-chave (frágil, e a chamada nativa já resolve).
+
+**Reverte-se assim.** Tirar `TOOLS` da chamada do nó "responder" volta o chat a só texto.
+
+---
+
+## ADR-018 — Credenciamento do bot pela interface
+
+**Status.** Implementada em 2026-11-15, a pedido do dono do produto.
+
+**Contexto.** Conectar a conta do Google do bot exigia rodar `bot_setup` no terminal. O pedido
+foi um botão na interface que credencia o bot e só então libera o envio às reuniões.
+
+**Decisão.**
+- Estado num documento `bot_account` no Mongo: `unknown → creating → (waiting_login) → ready`
+  (ou `not_configured`/`error`). `GET /bot/status` para todos; `POST /bot/setup` só admin.
+- O credenciamento é a task `setup_bot` na fila do bot (o perfil do Chrome é um só: nunca
+  junto de uma gravação). Ela confere se o perfil já está logado; se não, com
+  `BOT_GOOGLE_EMAIL`/`BOT_GOOGLE_PASSWORD` no `.env` digita e-mail e senha; sem eles, ou se o
+  Google pedir verificação (código, celular, captcha), fica em `waiting_login` e a tela do
+  navegador do bot (noVNC) aparece na própria interface para alguém concluir. **Não há
+  tentativa de contornar verificação do Google.**
+- Ao subir, o worker do bot confere o perfil sozinho (`check_only`) e grava `ready` ou
+  `not_configured`: um perfil logado à mão continua valendo.
+- O envio do bot (Meet, Zoom, Teams) só é aceito com `ready` (`409` na API; botão desabilitado
+  no Streamlit). Em solo não há credenciamento.
+- Estado `creating`/`waiting_login` sem atualização por 15 min vira `error` (worker morreu).
+
+**Riscos.** O Google costuma desconfiar de login automatizado e pedir verificação; o caminho
+humano pelo noVNC é o que sempre funciona. A senha no `.env` é um segredo a mais (checklist de
+segurança). O status `ready` reflete a última conferência: se a sessão do Google expirar entre
+uma conferência e outra, o bot falha ao entrar; "Reconectar" refaz.
+
+**Reverte-se assim.** Tirar a checagem de `bot_status` de `dispatch_bot`; o `bot_setup` do
+terminal continua funcionando.

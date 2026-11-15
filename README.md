@@ -45,7 +45,7 @@ cp .env.example .env            # preencha; API_KEY é obrigatória (comando par
 docker compose up -d --build
 
 # 2. Ambiente do bot, no host (ele usa o Chromium e o login do Google desta máquina)
-python3.11 -m venv venv && source venv/bin/activate
+python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
 playwright install chromium
 python -m infrastructure.recorder.bot_setup     # uma vez: login manual da conta do bot
@@ -73,6 +73,61 @@ BOT_CHROME_PROFILE=./bot_chrome_profile_2 python main.py --bot-worker
 
 Teste de carga, sempre contra um banco de rascunho com cadastro aberto:
 `python -m scripts.load_test --api http://localhost:8001 --audio reuniao.wav --uploads 4,1,1`.
+
+### Credenciar o bot (pela interface)
+
+Na tela **Enviar bot**, o administrador clica em **🤖 Credenciar bot**. Aparece "Criando bot...";
+se não houver `BOT_GOOGLE_EMAIL`/`BOT_GOOGLE_PASSWORD` no `.env`, ou se o Google pedir
+verificação, a tela do navegador do bot aparece na própria página para concluir o login. Ao
+terminar: "✅ Bot credenciado", e o envio do bot é liberado (Meet, Zoom e Teams). O comando
+`bot_setup` abaixo continua valendo como alternativa.
+
+### Bot em container (S10-1)
+
+O bot também roda no compose, sem Python nem Playwright no host: Chromium com tela virtual e som
+virtual, e o perfil com o login do Google num volume (`bot_profile`). Até ser validado numa
+reunião real, ele é opcional (perfil `bot`) e convive com o worker do host. **Não rode os dois
+ao mesmo tempo**: os dois pegam tarefas da mesma fila.
+
+```bash
+docker compose --profile bot build bot
+# 1. Login da conta do bot, uma vez: abra http://localhost:6080/vnc.html, clique em Connect
+#    e entre na conta na janela do Chromium (até 5 min)
+docker compose --profile bot run --rm --service-ports bot python -m infrastructure.recorder.bot_setup
+# 2. Fumaça: alguém cria a reunião e admite o bot
+docker compose --profile bot run --rm --service-ports bot python -m infrastructure.recorder.run_bot --url <link> --smoke 30
+# 3. Worker do bot
+docker compose --profile bot up -d bot
+```
+
+Para ver o que o bot está vendo durante uma reunião: http://localhost:6080/vnc.html. A porta só
+abre nesta máquina.
+
+### Windows (Docker Desktop + WSL2)
+
+Tudo que roda no compose funciona igual no Windows: envio de áudio, transcrição, resumo, chat,
+login e backup. O bot roda pelo container (seção acima); falta a primeira reunião real com ele, no macOS e no Windows.
+
+1. Instale o WSL2 (`wsl --install` no PowerShell como administrador) e o Docker Desktop com o
+   backend WSL2 (padrão). Em *Settings → Resources → WSL integration*, ligue a sua distribuição.
+2. **Clone dentro do WSL2**, não em `C:\`. A pasta `./data` é montada nos containers, e montagem a
+   partir do disco do Windows é muito lenta para o áudio e o modelo do Whisper:
+   ```bash
+   # no terminal do Ubuntu (WSL2)
+   cd ~ && git clone <repositório> meet-agent && cd meet-agent
+   cp .env.example .env    # preencha
+   docker compose up -d --build
+   ```
+   O `.gitattributes` mantém os arquivos com fim de linha LF mesmo no Windows. Se o repositório
+   foi clonado antes dele existir com `core.autocrlf=true` e algum script falhar com `$'\r'`,
+   rode `git add --renormalize . && git checkout -- .` (ou clone de novo).
+3. **Ollama no Windows** (instalador do site): os containers o acessam em
+   `host.docker.internal:11434`, já configurado no compose. Se o resumo der erro de conexão,
+   defina a variável de ambiente `OLLAMA_HOST=0.0.0.0` no Windows e reinicie o Ollama.
+4. Abra http://localhost:8501 no navegador do Windows (o Docker Desktop publica as portas).
+
+Backup e restauração: `docker compose run --rm backup` e
+`docker compose run --rm backup restore backups/<arquivo>`, no terminal do WSL2 ou no PowerShell.
 
 ### Modo de desenvolvimento (sem Docker)
 
@@ -143,11 +198,31 @@ No Teams e no Zoom o bot entra como convidado pelo navegador, com o nome `BOT_NA
 | Título pela agenda | `ENABLE_CALENDAR=true`, com `credentials.json` do Google Calendar |
 | Exportação Markdown | Sempre disponível (botão na interface e rota da API) |
 
+## Chat com ações
+
+Além de responder, o chat executa dois pedidos (ADR-017):
+- **E-mail**: "mande as decisões para ana@empresa.com" prepara o e-mail e mostra o texto com
+  **Enviar** e **Descartar**. Nada sai sem o clique, e só para endereços que você escreveu.
+- **Documento**: gera o arquivo com botão de download. Formatos: PDF, Word, Excel (xlsx), CSV,
+  HTML e Markdown. Ex.: "gere a ata em PDF", "uma planilha Excel com as tarefas e prazos",
+  "exporte as decisões em CSV", "um dashboard em HTML com as falas por participante". No HTML,
+  cada tabela com números vira um gráfico de barras; os números (falas, tarefas, decisões) são
+  contados pelo sistema, não pelo modelo.
+
 ## Operação
 
-- **Logs:** toda linha traz o id da reunião. `docker compose logs worker | grep <id>` segue uma reunião.
-- **Backup:** `scripts/backup.sh` gera `backups/mongo-<data>.archive.gz` e apaga gravações com mais
-  de 30 dias (`AUDIO_RETENTION_DAYS`). Restaurar: `scripts/backup.sh restore <arquivo>`.
+Servidor com HTTPS: `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d`
+(exige `DOMAIN` no `.env`). Roteiro completo — restaurar, trocar a chave, reiniciar o bot, alerta
+— em [docs/operacao.md](docs/operacao.md); checklist antes de abrir para usuários em
+[docs/seguranca.md](docs/seguranca.md).
+
+
+- **Logs:** toda linha traz o id da reunião. `docker compose logs worker-transcribe worker-llm | grep <id>`
+  segue uma reunião.
+- **Backup:** `docker compose run --rm backup` gera `backups/mongo-<data>.archive.gz` e apaga
+  gravações com mais de 30 dias (`AUDIO_RETENTION_DAYS`). Restaurar:
+  `docker compose run --rm backup restore backups/<arquivo>`. Roda num container, então é o mesmo
+  comando no Windows; `scripts/backup.sh` é só um atalho para ele.
 - **Reunião com erro:** a mensagem aparece na interface; o botão "Reprocessar áudio gravado" refaz
   a transcrição e o resumo sem precisar de nova reunião.
 - **Teste de fumaça do bot:** `python -m infrastructure.recorder.run_bot --url <link> --smoke 30`

@@ -1,8 +1,10 @@
 """worker/tasks.py — task Celery do processamento de reuniões (modo collab)."""
 import logging
+import os
 
 from celery import Celery
 from celery.signals import setup_logging as celery_setup_logging
+from celery.signals import worker_ready
 
 from config.logging_setup import bind_meeting, setup_logging
 from config.settings import get_settings
@@ -20,6 +22,7 @@ celery_app.conf.update(
     # uma escala com seus próprios workers. O bot grava uma reunião por worker (ADR-006).
     task_routes={
         "join_meeting": {"queue": "bot"},
+        "setup_bot": {"queue": "bot"},   # usa o mesmo perfil do Chrome: uma coisa por vez
         "process_meeting": {"queue": "transcribe"},
         "summarize_meeting": {"queue": "llm"},
     },
@@ -89,3 +92,24 @@ def summarize_meeting_task(meeting_id: str) -> dict:
     bind_meeting(meeting_id)
     meeting = get_container().process_meeting.summarize(meeting_id)
     return {"meeting_id": meeting.id, "status": meeting.status.value, "error": meeting.error}
+
+
+@celery_app.task(name="setup_bot")
+def setup_bot_task(check_only: bool = False) -> str:
+    """Credencia a conta do Google do bot (botão "Credenciar bot") ou só confere (check_only)."""
+    import asyncio
+    from infrastructure.recorder.bot_setup import credential
+    from presentation.container import get_container
+
+    settings = get_settings()
+    store = get_container().bot_account
+    return asyncio.run(credential(store.set, settings.bot_google_email, settings.bot_google_password,
+                                  check_only=check_only))
+
+
+@worker_ready.connect
+def _check_bot_account(**_):
+    """Worker do bot no ar: confere se o perfil está logado, para a interface saber se pode
+    mandar o bot (o perfil pode ter sido logado à mão ou ter perdido a sessão)."""
+    if os.environ.get("MEET_AGENT_BOT_WORKER"):
+        setup_bot_task.delay(check_only=True)

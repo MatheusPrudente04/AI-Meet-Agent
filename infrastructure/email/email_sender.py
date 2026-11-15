@@ -95,6 +95,15 @@ class EmailSender:
         )
         return self._send(to_email, "Meet Agent — código para nova senha", body)
 
+    def send_message(self, to: list[str], subject: str, body: str) -> bool:
+        """E-mail livre (ferramenta send_email do chat), um envio por destinatário."""
+        for address in to:
+            self._send(address, subject, body)
+        return True
+
+    def send_alert(self, to_email: str, subject: str, body: str) -> bool:
+        return self._send(to_email, f"Meet Agent — {subject}", body)
+
     def _send(self, to_email: str, subject: str, content: str) -> bool:
         settings = self._settings
         if not settings.email_enabled:

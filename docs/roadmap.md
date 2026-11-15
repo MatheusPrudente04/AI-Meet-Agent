@@ -186,7 +186,7 @@ S7 contas/sessões ─► S8 LangGraph ─► S9 fila/N usuários ─► S10 Win
 | S6-4 | chore | Google Calendar com a API real | Título do bot vindo de um evento da agenda |
 | S6-5 | — | Movida para a Sprint 7 (S7-5), junto do resto das contas | — |
 | S6-6 | — | Discord: movido para depois da 1.0 (é outra arquitetura de captura e não bloqueia nada) | — |
-| S6-7 | chore | venv local em Python 3.11; CI verde no GitHub | CI verde desde 2026-11-15 (2 execuções). **Falta** o venv 3.11 |
+| S6-7 | chore | venv local em Python 3.11; CI verde no GitHub | Feito em 2026-11-15: `.venv` (3.11, versões travadas) com testes verdes e o OpenAPI idêntico ao do container. Falta trocar o worker do bot para ele (Playwright 1.65 baixa outro Chromium; ver CHANGELOG) |
 
 ## Sprint 7 — Contas, sessões e isolamento por perfil (ADR-011)
 
@@ -257,6 +257,12 @@ Saída: o teste de carga com a meta da ADR-015 passa, sem tarefa perdida e sem d
 
 ## Sprint 10 — Windows via Docker (ADR-016)
 
+**Estado em 2026-11-15** (Docker em manutenção): S10-2 a S10-5 feitas sem Docker. O script de
+backup foi validado contra um Mongo de rascunho no host (backup, retenção, restauração com
+`--drop`); o serviço `backup` rodou no compose depois que o Docker voltou. S10-1: imagem do bot construída,
+login do Google feito pelo noVNC, fumaça verde e reunião completa até o resumo no container;
+falta o teste num Windows. O job de Windows do CI roda no próximo push.
+
 Objetivo: subir o sistema completo numa máquina Windows só com Docker Desktop, seguindo o README.
 
 | Id | Tipo | Tarefa | Pronto quando |
@@ -270,6 +276,12 @@ Objetivo: subir o sistema completo numa máquina Windows só com Docker Desktop,
 Saída: Windows 11 com Docker Desktop, do clone à reunião resumida, sem passo fora do README.
 
 ## Sprint 11 — Versão 1.0 em produção
+
+**Preparado em 2026-11-15, sem servidor:** `docker-compose.prod.yml` + `deploy/Caddyfile` (S11-2;
+config do compose conferida, Caddy não executado), cookie `Secure` sob HTTPS, checklist em
+`docs/seguranca.md` (S11-3), `/health` com workers e `scripts/health_alert.py` (S11-4; testados
+no host), roteiro `docs/operacao.md` e rascunho do `CHANGELOG.md` (S11-6). Trava por link no envio
+do bot (corrida que a API em 2 processos tornou provável), testada entre processos no Redis.
 
 | Id | Tipo | Tarefa | Pronto quando |
 |----|------|--------|---------------|

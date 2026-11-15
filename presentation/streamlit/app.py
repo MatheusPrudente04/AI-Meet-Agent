@@ -17,8 +17,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import streamlit as st
+import streamlit.components.v1 as components
 from config.settings import get_settings
-from presentation.container import MeetingInProgress, get_container
+from presentation.container import BotNotReady, MeetingInProgress, get_container
 from domain.entities.meeting import Meeting, MeetingStatus, Summary
 from use_cases.process_meeting import ProcessMeetingInput
 from use_cases.chat_with_meeting import ChatWithMeetingInput
@@ -76,9 +77,11 @@ def write_cookie() -> None:
         return
     st.session_state.cookie = None
     max_age = settings.session_days * 86400 if token else 0
-    # ponytail: cookie gravado por JS (sem HttpOnly); com HTTPS na S11, acrescentar Secure
+    # ponytail: cookie gravado por JS, então sem HttpOnly (o Streamlit não deixa o servidor
+    # mandar Set-Cookie). Secure entra sozinho quando a página vem por HTTPS (S11-2).
     st.html(
-        f"<script>document.cookie = '{COOKIE}={token}; Max-Age={max_age}; Path=/; SameSite=Strict';</script>",
+        f"<script>document.cookie = '{COOKIE}={token}; Max-Age={max_age}; Path=/; SameSite=Strict'"
+        f" + ((window.top || window).location.protocol === 'https:' ? '; Secure' : '');</script>",
         unsafe_allow_javascript=True,
     )
 
@@ -199,6 +202,83 @@ _STATUS_LABEL = {
     MeetingStatus.PENDING: "Na fila", MeetingStatus.RECORDING: "Bot gravando a reunião",
     MeetingStatus.TRANSCRIBING: "Transcrevendo o áudio", MeetingStatus.SUMMARIZING: "Gerando o resumo",
 }
+
+
+@st.fragment(run_every="3s")
+def bot_setup_progress() -> None:
+    """Credenciamento em andamento: relê o estado a cada 3 s e recarrega a página ao terminar."""
+    bot = container.bot_status()
+    if bot["status"] == "creating":
+        st.info(f"⏳ **Criando bot...** {bot['message']}")
+    elif bot["status"] == "waiting_login":
+        st.warning(f"🔐 {bot['message']}. Esta é a tela do navegador do bot: entre na conta do Google dele.")
+        components.iframe(bot["vnc_url"], height=560)
+    else:
+        st.rerun()  # terminou (ou falhou): a página inteira mostra o resultado e libera o envio
+
+
+def bot_credential_panel() -> bool:
+    """Estado da conta do bot. True = credenciado, pode enviar o bot."""
+    if container.bot_account is None:  # solo: sem fila nem credenciamento
+        return True
+    bot = container.bot_status()
+    status = bot["status"]
+    is_admin = bool(st.session_state.get("user") and st.session_state.user.is_admin)
+    if status == "ready":
+        col_ok, col_again = st.columns([3, 1])
+        col_ok.success("✅ Bot credenciado")
+        if is_admin and col_again.button("Reconectar", help="Abre o login da conta do bot de novo"):
+            container.request_bot_setup()
+            st.rerun()
+        return True
+    if status in ("creating", "waiting_login"):
+        bot_setup_progress()
+        return False
+    if status == "error":
+        st.error(bot["message"])
+    else:
+        st.info("O bot ainda não está conectado a uma conta do Google. Credencie para começar a enviá-lo "
+                "às reuniões (Google Meet, Zoom e Teams).")
+    if is_admin:
+        if st.button("🤖 Credenciar bot", type="primary", use_container_width=True):
+            container.request_bot_setup()
+            st.rerun()
+    else:
+        st.caption("Peça ao administrador para credenciar o bot.")
+    return False
+
+
+def render_chat_action(meeting, action: dict) -> None:
+    """E-mail preparado pelo agente (confirmar ou descartar) ou documento gerado (baixar)."""
+    key = action["id"]
+    if action["type"] == "document":
+        try:
+            path, _ = container.document_file(meeting, key)
+        except LookupError:
+            st.caption("📄 Documento não está mais disponível.")
+            return
+        st.download_button(f"📄 Baixar {action['filename']}", data=path.read_bytes(),
+                           file_name=action["filename"], key=f"doc_{key}")
+        return
+    status = action["status"]
+    if status == "sent":
+        st.caption(f"✅ E-mail enviado para {', '.join(action['to'])}")
+        return
+    if status == "canceled":
+        st.caption("🗑️ E-mail descartado")
+        return
+    with st.container(border=True):
+        st.markdown(f"**Para:** {', '.join(action['to'])}  \n**Assunto:** {action['subject']}")
+        st.text(action["body"])
+        col_send, col_drop, _ = st.columns([1, 1, 3])
+        for col, label, send in ((col_send, "📧 Enviar", True), (col_drop, "Descartar", False)):
+            if col.button(label, key=f"{'send' if send else 'drop'}_{key}", use_container_width=True,
+                          type="primary" if send else "secondary"):
+                try:
+                    container.resolve_email_action(meeting, key, send)
+                    st.rerun()
+                except (RuntimeError, ValueError, LookupError) as exc:
+                    st.error(str(exc))
 
 
 _ACTIVE = (MeetingStatus.PENDING, MeetingStatus.RECORDING,
@@ -376,6 +456,7 @@ if st.session_state.page == "meetings":
 
             with col_form:
                 st.markdown("### 🤖 Enviar bot")
+                bot_ready = bot_credential_panel()
                 meet_url = st.text_input(
                     "Link da reunião",
                     placeholder="https://meet.google.com/xxx-yyyy-zzz",
@@ -389,7 +470,7 @@ if st.session_state.page == "meetings":
                 if st.button(
                     "🚀 Enviar bot para a reunião",
                     # Com a agenda ligada o título pode vir do evento.
-                    disabled=not (meet_url and (meeting_title or settings.enable_calendar)),
+                    disabled=not (bot_ready and meet_url and (meeting_title or settings.enable_calendar)),
                     type="primary",
                     use_container_width=True,
                 ):
@@ -399,7 +480,7 @@ if st.session_state.page == "meetings":
                         st.warning(str(e))
                         select_meeting(container.meeting_for(e.meeting_id, OWNER))
                         st.rerun()
-                    except ValueError as e:
+                    except (BotNotReady, ValueError) as e:
                         st.error(str(e))
                     else:
                         select_meeting(container.meeting_for(new_id, OWNER))
@@ -415,8 +496,8 @@ if st.session_state.page == "meetings":
                 5. Quando a reunião terminar, ele sai automaticamente
                 6. O áudio é transcrito e o resumo fica disponível aqui
 
-                **Nota:** Use uma conta Google dedicada para o bot.
-                Configure com: `python -m infrastructure.recorder.bot_setup`
+                **Nota:** use uma conta Google só para o bot. O administrador a conecta uma vez
+                pelo botão **Credenciar bot**.
                 """)
 
     else:
@@ -426,7 +507,24 @@ if st.session_state.page == "meetings":
             st.stop()
         summary = meeting.summary
 
-        st.subheader(f"📋 {meeting.title}")
+        col_title, col_delete = st.columns([5, 1])
+        col_title.subheader(f"📋 {meeting.title}")
+        with col_delete.popover("🗑️ Apagar", use_container_width=True):
+            if meeting.status in _ACTIVE:
+                st.caption("A reunião ainda está em andamento. Espere terminar para apagar.")
+            else:
+                st.markdown("Apaga a reunião, o resumo, a transcrição, a conversa e os arquivos gerados. "
+                            "**Não dá para desfazer.**")
+                if st.button("Apagar definitivamente", type="primary", key=f"del_{meeting.id}",
+                             use_container_width=True):
+                    try:
+                        container.delete_meeting(meeting)
+                    except MeetingInProgress:
+                        st.error("A reunião voltou a ficar em andamento. Tente quando terminar.")
+                    else:
+                        select_meeting(None)
+                        st.toast(f"Reunião \"{meeting.title}\" apagada.")
+                        st.rerun()
         date_str = meeting.started_at.strftime("%d de %B de %Y às %H:%M").lstrip("0")
         st.caption(date_str)
 
@@ -535,7 +633,14 @@ elif st.session_state.page == "chat":
     chat_history = chat_meeting.chat_history
 
     st.markdown("---")
-    col_meta, _ = st.columns([2, 3])
+    col_meta, _, col_clear = st.columns([2, 2, 1])
+    with col_clear.popover("🗑️ Limpar conversa", use_container_width=True, disabled=not chat_history):
+        st.markdown("Apaga a conversa desta reunião, com os documentos gerados nela e os e-mails não "
+                    "enviados. O resumo e a transcrição ficam.")
+        if st.button("Limpar", type="primary", key=f"clear_{chat_meeting.id}", use_container_width=True):
+            container.clear_chat(chat_meeting)
+            st.toast("Conversa apagada.")
+            st.rerun()
     with col_meta:
         st.markdown(f"**{chat_meeting.title}**")
         st.caption(
@@ -553,6 +658,8 @@ elif st.session_state.page == "chat":
         for msg in chat_history:
             with st.chat_message(msg["role"]):
                 st.write(msg["content"])
+                if msg.get("action"):
+                    render_chat_action(chat_meeting, msg["action"])
 
     if prompt := st.chat_input("Ex: Quais foram as principais decisões?"):
         with chat_container:
@@ -566,8 +673,10 @@ elif st.session_state.page == "chat":
                         )
                         answer = result.answer if result.success else f"⚠️ {result.error_message}"
                     except Exception as e:
-                        answer = f"⚠️ Erro: {e}"
+                        answer, result = f"⚠️ Erro: {e}", None
                 st.write(answer)
+        if result is not None and result.action:
+            st.rerun()  # redesenha pela conversa guardada, já com os botões da ação
 
 elif st.session_state.page == "account":
     from datetime import datetime as _dt

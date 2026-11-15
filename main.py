@@ -64,7 +64,9 @@ def run_worker(bot: bool = False, queues: str = "transcribe,llm") -> None:
         cmd += ["-Q", "bot", "--pool=solo", "-n", f"bot-{profile}@%h"]
     else:
         cmd += ["-Q", queues, "--pool=solo", "-n", f"{queues.replace(',', '-')}@%h"]
-    subprocess.run(cmd, check=True)
+    # O worker do bot confere a conta do Google ao subir (worker.tasks._check_bot_account).
+    env = {**os.environ, "MEET_AGENT_BOT_WORKER": "1"} if bot else None
+    subprocess.run(cmd, check=True, env=env)
 
 
 def run_terminal_test(audio_path: str) -> None:

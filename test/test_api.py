@@ -1,5 +1,7 @@
 """API: autenticação, limites e sessão de captura (ADR-007)."""
 import io
+from pathlib import Path
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +15,7 @@ from presentation.container import Container
 from use_cases.auth import AuthService
 
 KEY = "chave-de-teste"
+LINK_LOCK = threading.Lock()
 AUTH = {"X-API-Key": KEY}
 
 
@@ -89,12 +92,18 @@ class FakeContainer:
     send_password_reset = Container.send_password_reset
     _title_from_calendar = Container._title_from_calendar
     queue_position = Container.queue_position
-    auth = None  # como em solo; os testes de login ligam com `with_login`
+    clear_chat = Container.clear_chat
+    bot_status = Container.bot_status
+    request_bot_setup = Container.request_bot_setup
+    bot_account = None  # sem credenciamento (como em solo); os testes do bot ligam um store
+    auth = None
+    _link_lock = staticmethod(lambda key: LINK_LOCK)  # em vez do Redis  # como em solo; os testes de login ligam com `with_login`
     calendar = None
     _is_collab = True
 
     def __init__(self, repo, queued):
         self.repository, self.queued = repo, queued
+        self.documents_dir = Path(repo._base).parent / "documents"
 
     def enqueue_processing(self, meeting_id, audio_path, title, wait=False, owner_id=""):
         self.queued.append((meeting_id, audio_path, title))
@@ -114,7 +123,8 @@ def ctx(tmp_path, monkeypatch):
     import api.main as main
     for mod in ("api.security", "api.routers.capture", "api.routers.meetings"):
         monkeypatch.setattr(f"{mod}.get_settings", lambda: settings)
-    for mod in ("api.security", "api.routers.auth", "api.routers.capture", "api.routers.meetings", "api.chat"):
+    for mod in ("api.security", "api.routers.auth", "api.routers.bot", "api.routers.capture", "api.routers.meetings",
+                "api.chat"):
         monkeypatch.setattr(f"{mod}.get_container", lambda: container)
     import worker.tasks
     bots = []
@@ -275,6 +285,8 @@ def test_agenda_da_titulo_ao_bot_e_falha_da_agenda_nao_impede(tmp_path):
 
     c = Container.__new__(Container)
     c.repository, c._is_collab = JsonMeetingRepository(str(tmp_path)), True
+    c._link_lock = lambda key: LINK_LOCK
+    c.bot_account = None
     import worker.tasks as tasks
     dispatched = []
     orig = tasks.join_meeting_task.delay
@@ -636,3 +648,88 @@ def test_smtp_recusado_mostra_o_motivo(monkeypatch):
     monkeypatch.setattr(mod.smtplib, "SMTP", RejectingSMTP)
     with pytest.raises(RuntimeError, match="senha de app"):
         mod.EmailSender().send_password_reset("ana@empresa.com", "Ana", "ABCD2345", 15)
+
+
+# ── Credenciamento do bot ────────────────────────────────────────────
+
+class MemoryBotStore:
+    def __init__(self, status="unknown"):
+        self.doc = {"status": status, "message": ""}
+
+    def get(self):
+        return dict(self.doc)
+
+    def set(self, status, message=""):
+        from datetime import datetime
+        self.doc = {"status": status, "message": message, "updated_at": datetime.utcnow()}
+
+
+@pytest.fixture
+def bot_setup(with_login, monkeypatch):
+    import worker.tasks as tasks
+    with_login.container.bot_account = MemoryBotStore()
+    with_login.setups = []
+    monkeypatch.setattr(tasks.setup_bot_task, "delay", lambda *a, **k: with_login.setups.append(k))
+    return with_login
+
+
+def test_bot_sem_credencial_nao_e_enviado(bot_setup):
+    c = bot_setup.client
+    ana, _ = signup(bot_setup)
+    assert c.get("/bot/status", headers=ana).json()["status"] == "unknown"
+    r = c.post("/meetings/bot", headers=ana, json={"meeting_url": "https://meet.google.com/abc-defg-hij"})
+    assert r.status_code == 409 and "credenciado" in r.json()["detail"] and bot_setup.container.bots == []
+
+
+def test_admin_credencia_e_libera_o_envio(bot_setup):
+    c = bot_setup.client
+    ana, user = signup(bot_setup)  # primeira conta = admin
+    assert user["role"] == "admin"
+    r = c.post("/bot/setup", headers=ana)
+    assert r.status_code == 202 and r.json()["status"] == "creating" and len(bot_setup.setups) == 1
+    assert c.post("/bot/setup", headers=ana).json()["status"] == "creating"
+    assert len(bot_setup.setups) == 1  # já em andamento: não enfileira de novo
+    bot_setup.container.bot_account.set("ready", "Conta do bot conectada")  # o worker terminou
+    r = c.post("/meetings/bot", headers=ana, json={"meeting_url": "https://meet.google.com/abc-defg-hij"})
+    assert r.status_code == 200 and len(bot_setup.container.bots) == 1
+
+
+def test_so_admin_credencia(bot_setup):
+    signup(bot_setup)
+    bia, user = signup(bot_setup, email="bia@empresa.com", name="Bia")
+    assert user["role"] != "admin"
+    assert bot_setup.client.post("/bot/setup", headers=bia).status_code == 403
+    assert bot_setup.setups == []
+
+
+def test_credenciamento_parado_vira_erro(bot_setup):
+    from datetime import datetime, timedelta
+    store = bot_setup.container.bot_account
+    store.doc = {"status": "waiting_login", "message": "", "updated_at": datetime.utcnow() - timedelta(hours=1)}
+    assert bot_setup.container.bot_status()["status"] == "error"
+
+
+def test_limpar_conversa_so_do_dono_e_mantem_a_reuniao(with_login):
+    c, repo = with_login.client, with_login.repo
+    ana, ana_user = signup(with_login)
+    bia, _ = signup(with_login, email="bia@empresa.com", name="Bia")
+    repo.save(Meeting(id="m1", title="Daily", owner_id=ana_user["id"], status=MeetingStatus.DONE,
+                      transcript_text="Ana: oi", chat_history=[{"role": "user", "content": "oi"}]))
+    docs = with_login.container.documents_dir / "m1"
+    docs.mkdir(parents=True)
+    (docs / "a.pdf").write_bytes(b"%PDF")
+    assert c.delete("/meetings/m1/chat", headers=bia).status_code == 404  # reunião de outra pessoa
+    assert repo.find_by_id("m1").chat_history
+    assert c.delete("/meetings/m1/chat", headers=ana).status_code == 204
+    m = repo.find_by_id("m1")
+    assert m.chat_history == [] and m.transcript_text == "Ana: oi" and not docs.exists()
+
+
+def test_apagar_reuniao_pela_api(with_login):
+    c, repo = with_login.client, with_login.repo
+    ana, ana_user = signup(with_login)
+    repo.save(Meeting(id="m2", title="x", owner_id=ana_user["id"], status=MeetingStatus.RECORDING))
+    assert c.delete("/meetings/m2", headers=ana).status_code == 409  # em andamento
+    m = repo.find_by_id("m2"); m.status = MeetingStatus.DONE; repo.save(m)
+    assert c.delete("/meetings/m2", headers=ana).status_code == 204
+    assert repo.find_by_id("m2") is None and c.get("/meetings/m2", headers=ana).status_code == 404

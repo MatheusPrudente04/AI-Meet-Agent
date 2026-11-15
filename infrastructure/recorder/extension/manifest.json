@@ -14,7 +14,8 @@
     "https://teams.microsoft.com/*",
     "https://teams.live.com/*",
     "https://*.zoom.us/*",
-    "http://127.0.0.1/*"
+    "http://127.0.0.1/*",
+    "http://api/*"
   ],
   "background": {
     "service_worker": "background.js"

@@ -2,7 +2,10 @@
 
     docker compose run --rm --no-deps -v "$PWD/docs:/app/docs" api python -m api.export_openapi
 
-(no container, para usar as versões travadas das bibliotecas)
+(no container, para usar as versões travadas das bibliotecas) ou, sem Docker, no venv
+em Python 3.11 com o requirements.txt travado — sai idêntico (conferido em 2026-11-15):
+
+    .venv/bin/python -m api.export_openapi
 
 É o contrato para quem constrói um front: importe no Swagger Editor, no Postman
 ou gere o cliente com openapi-generator. O teste test_openapi_em_dia falha se as

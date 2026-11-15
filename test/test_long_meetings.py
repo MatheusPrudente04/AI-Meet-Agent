@@ -102,7 +102,7 @@ def test_ollama_pede_janela_do_tamanho_do_prompt(monkeypatch):
     cfg = SimpleNamespace(llm_provider="ollama", openai_api_key="", ollama_num_ctx_max=32768,
                           ollama_model="m", ollama_base_url="http://h:11434/v1")
     svc = MeetingAgent(model=ModelClient(cfg), contract="")
-    assert svc.chat("oi?", context="x" * 30000, history=[{"role": "user", "content": "antes"}]) == "ok"
+    assert svc.chat("oi?", context="x" * 30000, history=[{"role": "user", "content": "antes"}]).answer == "ok"
     assert sent[0]["options"]["num_ctx"] == 16384 and "format" not in sent[0]
     assert [m["role"] for m in sent[0]["messages"]] == ["system", "user", "user"]
     svc.chat("oi?", context="curto", history=[])

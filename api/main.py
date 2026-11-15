@@ -4,7 +4,7 @@ from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from api import chat
-from api.routers import auth, capture, meetings
+from api.routers import auth, bot, capture, meetings
 from api.routers.meetings import AUDIO_SUFFIXES
 from api.schemas.meeting import ConfigResponse, PlatformSchema
 from api.security import current_principal
@@ -51,6 +51,7 @@ TAGS = [
     {"name": "chat", "description": "Perguntas sobre uma reunião já transcrita."},
     {"name": "admin", "description": "Só para administradores (a primeira conta): usuários e limpeza de sessões."},
     {"name": "sistema", "description": "Configuração para o front e verificação de saúde. Sem autenticação."},
+    {"name": "bot", "description": "Credenciamento da conta do Google do bot: o envio do bot só é liberado com status ready."},
     {"name": "capture", "description": "Uso interno do bot (áudio em chunks). O front não chama."},
 ]
 
@@ -71,6 +72,7 @@ app.include_router(meetings.router, prefix="/meetings", tags=["meetings"], depen
 app.include_router(chat.router, prefix="/meetings", tags=["chat"], dependencies=_auth)
 # /capture/* tem autenticação própria: token por sessão (api/security.py).
 app.include_router(capture.router, prefix="/capture", tags=["capture"])
+app.include_router(bot.router, prefix="/bot", tags=["bot"], dependencies=_auth)
 
 
 @app.get("/config", response_model=ConfigResponse, tags=["sistema"], summary="O que está ligado nesta instalação")
@@ -92,9 +94,24 @@ def config():
     )
 
 
-@app.get("/health", tags=["sistema"], summary="Saúde do banco e da fila")
+def _workers() -> dict:
+    """Workers vivos por fila (ADR-015). Sem worker em `transcribe` ou `llm`, as reuniões
+    ficam paradas na fila sem erro nenhum: é isso que o alerta da S11-4 precisa ver.
+    O bot é informativo: pode rodar no host e nem sempre está ligado."""
+    from worker.tasks import celery_app
+    try:
+        replies = celery_app.control.inspect(timeout=1).active_queues() or {}
+    except Exception as exc:
+        return {"workers": f"erro: {type(exc).__name__}"}
+    serving = {q["name"] for queues in replies.values() for q in queues}
+    return {f"worker_{q}" if q != "bot" else "bot": "ok" if q in serving else "sem worker"
+            for q in ("transcribe", "llm", "bot")}
+
+
+@app.get("/health", tags=["sistema"], summary="Saúde do banco, da fila e dos workers")
 def health(response: Response):
-    """Confere as dependências de verdade: 503 se o banco ou a fila não respondem."""
+    """Confere as dependências de verdade: 503 se o banco ou a fila não respondem, ou se
+    uma etapa (`worker_transcribe`, `worker_llm`) está sem worker. `bot` só informa."""
     checks = {}
     try:
         get_container().repository.find_by_id("__health__")
@@ -108,7 +125,9 @@ def health(response: Response):
             checks["queue"] = "ok"
         except Exception as exc:
             checks["queue"] = f"erro: {type(exc).__name__}"
-    ok = all(v == "ok" for v in checks.values())
+        if checks["queue"] == "ok":
+            checks.update(_workers())
+    ok = all(v == "ok" for k, v in checks.items() if k != "bot")
     if not ok:
         response.status_code = 503
     return {"status": "ok" if ok else "degraded", "mode": settings.app_mode, **checks}

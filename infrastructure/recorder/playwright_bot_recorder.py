@@ -138,7 +138,8 @@ class BotSession:
 
 
 class PlaywrightBotRecorder:
-    ALONE_TIMEOUT = 120.0
+    ALONE_TIMEOUT = 80.0              # sozinho na reunião por mais que isso: sai
+    UNKNOWN_COUNT_TIMEOUT = 600.0     # contagem de participantes ilegível por mais que isso: sai
     SILENCE_TIMEOUT = 300.0
     END_POLL_INTERVAL = 5.0
     CAPTIONS_RETRY_S = 10.0
@@ -659,7 +660,7 @@ class PlaywrightBotRecorder:
             if count == -1:
                 if unknown_since is None:
                     unknown_since = now
-                elif ever_had_participants and (now - unknown_since) > self.ALONE_TIMEOUT * 5:
+                elif ever_had_participants and (now - unknown_since) > self.UNKNOWN_COUNT_TIMEOUT:
                     logger.info(
                         "Contagem de participantes inacessível por %.0fs — encerrando",
                         now - unknown_since,

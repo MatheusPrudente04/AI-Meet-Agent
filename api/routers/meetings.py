@@ -14,7 +14,7 @@ from config.settings import get_settings
 from domain.entities.meeting import Meeting, MeetingStatus
 from infrastructure.email.email_sender import EmailSender
 from infrastructure.exporters.markdown_exporter import MarkdownExporter
-from presentation.container import MeetingInProgress, get_container
+from presentation.container import BotNotReady, MeetingInProgress, get_container
 
 router = APIRouter()
 _NOT_FOUND = {404: {"description": "Reunião não existe ou é de outro usuário"}}
@@ -90,7 +90,7 @@ class SendBotRequest(BaseModel):
 
 
 @router.post("/bot", response_model=UploadResponse, summary="Manda o bot para uma reunião", responses={
-    409: {"description": "Você já mandou o bot a este link e a reunião não acabou"},
+    409: {"description": "Você já mandou o bot a este link e a reunião não acabou, ou o bot não foi credenciado"},
     422: {"description": "Link não reconhecido ou plataforma sem suporte"}, **_TOO_MANY,
 })
 def send_bot(body: SendBotRequest, principal: Principal = Depends(rate_limited)):
@@ -100,6 +100,8 @@ def send_bot(body: SendBotRequest, principal: Principal = Depends(rate_limited))
         meeting_id = get_container().dispatch_bot(body.meeting_url, body.title, owner_id=principal.owner_id or "")
     except MeetingInProgress as exc:
         raise HTTPException(409, f"{exc} (id {exc.meeting_id})")
+    except BotNotReady as exc:
+        raise HTTPException(409, str(exc))
     except ValueError as exc:
         raise HTTPException(422, str(exc))
     return UploadResponse(

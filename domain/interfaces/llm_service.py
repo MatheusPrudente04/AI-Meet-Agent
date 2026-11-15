@@ -1,6 +1,17 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Optional
+
 from domain.entities.meeting import Summary
 from domain.entities.meeting_type import MeetingType
+
+
+@dataclass
+class ChatReply:
+    """Resposta do chat. `tool` = ferramenta que o agente pediu para usar, no lugar de responder:
+    {"name": "send_email" | "create_document", "arguments": {...}}. Quem executa é o caso de uso."""
+    answer: str
+    tool: Optional[dict] = None
 
 
 class ILLMService(ABC):

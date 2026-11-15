@@ -1,0 +1,45 @@
+# Produção num servidor (S11-2): HTTPS na frente e nada mais exposto.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --remove-orphans
+#
+# Exige DOMAIN no .env (ex.: DOMAIN=reunioes.exemplo.com) e o DNS de DOMAIN e api.DOMAIN
+# apontando para o servidor. Só as portas 80 e 443 ficam abertas: API, Streamlit, Mongo e Redis
+# deixam de ser publicados no host e só são alcançados pela rede interna do compose.
+# Consequência: o worker do bot no host deixa de alcançar o Redis; em produção o bot roda em
+# container (S10-1, ADR-016).
+
+services:
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    environment:
+      DOMAIN: ${DOMAIN:?defina DOMAIN no .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data      # certificados: perder isso força emitir de novo
+      - caddy_config:/config
+    depends_on:
+      - api
+      - streamlit
+    restart: unless-stopped
+
+  api:
+    ports: !reset []
+    environment:
+      ALLOWED_ORIGINS: '["https://${DOMAIN}"]'
+
+  streamlit:
+    ports: !reset []
+
+  mongo:
+    ports: !reset []
+
+  redis:
+    ports: !reset []
+
+volumes:
+  caddy_data:
+  caddy_config:

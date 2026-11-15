@@ -23,6 +23,11 @@ class FakeModel:
         self.calls.append(messages)
         return self.answers.pop(0)
 
+    def complete_tools(self, messages, tools):
+        """Resposta em texto; um dict na lista de respostas é um pedido de ferramenta."""
+        answer = self.complete(messages)
+        return (answer, None) if isinstance(answer, str) else ("", answer)
+
 
 def agent(*answers):
     model = FakeModel(*answers)
@@ -67,7 +72,7 @@ def test_status_da_decisao_nunca_aprovada_por_omissao():
 
 def test_chat_leva_o_contrato_e_o_contexto():
     a, model = agent("A reunião tratou da integração de pedidos com o financeiro.")
-    assert a.chat("Do que tratou?", CTX, history=[{"role": "user", "content": "oi"}]).startswith("A reunião")
+    assert a.chat("Do que tratou?", CTX, history=[{"role": "user", "content": "oi"}]).answer.startswith("A reunião")
     system = model.calls[0][0]["content"]
     assert system.startswith("CONTRATO DE TESTE") and CTX in system
     assert [m["role"] for m in model.calls[0]] == ["system", "user", "user"]
@@ -75,14 +80,14 @@ def test_chat_leva_o_contrato_e_o_contexto():
 
 def test_chat_corrige_uma_vez_com_as_violacoes():
     a, model = agent('Segundo Carlos, "a migração está aprovada para março".', "A migração não foi aprovada.")
-    assert a.chat("A migração foi aprovada?", CTX, history=[]) == "A migração não foi aprovada."
+    assert a.chat("A migração foi aprovada?", CTX, history=[]).answer == "A migração não foi aprovada."
     correction = model.calls[1][-1]["content"]
     assert "violou o contrato" in correction and "Carlos" in correction
 
 
 def test_chat_desiste_com_resposta_padrao():
     a, model = agent("Segundo Carlos, sim.", "Segundo Carlos, sim mesmo.")
-    assert a.chat("Foi aprovada?", CTX, history=[]) == FALLBACK
+    assert a.chat("Foi aprovada?", CTX, history=[]).answer == FALLBACK
     assert len(model.calls) == 2
 
 
@@ -132,3 +137,59 @@ def test_chat_recebe_decisoes_classificadas_do_resumo():
                 summary=Summary(decisions=[Decision("Migrar para a nuvem", status="proposta")]))
     ChatWithMeetingUC(a).execute(ChatWithMeetingInput(meeting=m, question="O que foi aprovado?", history=[]))
     assert "- [proposta] Migrar para a nuvem" in model.calls[0][0]["content"]
+
+
+# ── Ferramentas ──────────────────────────────────────────────────────
+
+def test_pedido_de_ferramenta_sai_no_reply_sem_texto():
+    tool = {"name": "create_document", "arguments": {"format": "pdf", "title": "Ata",
+            "content": "## Decisões\n- A integração entra em produção antes do dia 25."}}
+    a, _ = agent(tool)
+    reply = a.chat("Gere um PDF com as decisões", CTX, history=[])
+    assert reply.tool == tool and reply.answer == ""
+
+
+def test_conteudo_do_documento_passa_pela_verificacao():
+    inventado = {"name": "create_document", "arguments": {"format": "pdf", "title": "Ata",
+                 "content": 'Ana disse: "a migração está aprovada para março e sem custo"'}}
+    corrigido = {"name": "create_document", "arguments": {"format": "pdf", "title": "Ata",
+                 "content": "A migração para a nuvem ficou para outra reunião."}}
+    a, model = agent(inventado, corrigido)
+    assert a.chat("Gere um PDF", CTX, history=[]).tool == corrigido
+    assert "citação" in model.calls[1][-1]["content"]  # a correção foi pedida com a violação
+
+
+def test_titulo_entre_aspas_no_documento_nao_e_citacao():
+    from infrastructure.llm.meeting_agent import _tool_text
+    tool = {"name": "create_document", "arguments": {"title": "Tarefas da Reunião de Integração",
+            "content": '# "Tarefas da Reunião de Integração"\n- Carla envia o calendário'}}
+    assert check_answer(_tool_text(tool), CTX, "Gere um Word") == []
+    inventada = {"name": "create_document", "arguments": {"title": "Ata",
+                 "content": 'Ana disse: "a migração está aprovada para março e sem custo"'}}
+    assert check_answer(_tool_text(inventada), CTX, "Gere") != []
+
+
+def test_cabecalho_entre_aspas_com_titulo_da_reuniao_nao_e_citacao():
+    from infrastructure.llm.meeting_agent import _tool_text
+    tool = {"name": "create_document", "arguments": {"title": "Tarefas",
+            "content": '# "Tarefas da Reunião de Integração Pedidos com Financeiro"\n'
+                       '**"Reunião de Integração Pedidos com Financeiro"**\n- Carla envia o calendário'}}
+    assert check_answer(_tool_text(tool), CTX, "Gere um Word") == []
+
+
+def test_titulo_entre_aspas_no_meio_do_texto_nao_e_citacao_mas_fala_e():
+    from infrastructure.llm.meeting_agent import _tool_text
+    titulo = {"name": "create_document", "arguments": {"title": "Ata",
+              "content": 'Este é o registro "Decisões e Discordâncias da Reunião de Integração" de hoje.'}}
+    assert check_answer(_tool_text(titulo), CTX, "Gere") == []
+    fala = {"name": "send_email", "arguments": {"subject": "x",
+            "body": 'Na reunião, Ana disse: "a migração está aprovada para março e sem custo".'}}
+    assert any("citação" in v for v in check_answer(_tool_text(fala), CTX, "Mande"))
+
+
+def test_dizer_que_gerou_sem_usar_ferramenta_e_violacao():
+    tool = {"name": "create_document", "arguments": {"format": "pdf", "title": "Ata",
+            "content": "A integração entra em produção antes do dia 25."}}
+    a, model = agent("Gerei o documento Ata em PDF. Baixe pelo botão abaixo.", tool)
+    assert a.chat("Gere um PDF", CTX, history=[]).tool == tool
+    assert "sem usar a ferramenta" in model.calls[1][-1]["content"]

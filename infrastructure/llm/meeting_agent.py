@@ -2,9 +2,11 @@
 
 Dois grafos atrás da porta ILLMService (casos de uso, API e interface não mudam):
 
-  chat:   responder → verificar ─ ok ──────────────► fim
+  chat:   responder (pode pedir uma ferramenta) → verificar ─ ok ──► fim
                          └─ violou → responder de novo (com as violações) → verificar
                          └─ violou de novo → resposta padrão de "elementos insuficientes"
+          Ferramentas: send_email e create_document. O texto do e-mail ou do documento passa
+          pela mesma verificação de contrato que uma resposta. Quem executa é o caso de uso.
 
   resumo: gerar → validar JSON ─ ok ─► normalizar (status da decisão, responsáveis) → fim
                      └─ inválido → gerar de novo (com o erro) ─ inválido de novo → erro
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional, TypedDict
@@ -25,7 +28,7 @@ from langgraph.graph import END, START, StateGraph
 from config.settings import get_settings
 from domain.entities.meeting import Decision, Summary, Task
 from domain.entities.meeting_type import MeetingType
-from domain.interfaces.llm_service import ILLMService, LLMServiceError
+from domain.interfaces.llm_service import ChatReply, ILLMService, LLMServiceError
 from infrastructure.llm.model_client import ModelClient
 from infrastructure.llm.prompt_builder import PromptBuilder
 from use_cases.contract_checks import FALLBACK, check_answer, decision_status, responsible_or_undefined
@@ -56,6 +59,11 @@ CHAT_RULES = """REGRAS DE OPERAÇÃO NESTE SISTEMA (complementam o contrato acim
 6. Pergunta direta pede resposta direta. Pedido de "análise completa" ou "ata" segue o formato do §13.
    Pergunta sobre o que você achou da reunião segue o §11.
 7. Responda em português do Brasil, salvo se a pergunta for feita em outro idioma.
+8. Ferramentas: use `send_email` só quando o usuário pedir para enviar um e-mail e informar o
+   endereço; nunca invente endereço. Se pedirem um e-mail sem dizer o endereço, não use a
+   ferramenta: peça o endereço de cada destinatário. Use `create_document` só quando ele pedir um arquivo (PDF,
+   Word, Excel, CSV, planilha, HTML, dashboard, gráfico, documento, ata em arquivo). O texto do e-mail ou do documento segue as mesmas regras de
+   fidelidade acima. Para qualquer outra pergunta, responda em texto, sem ferramenta.
 
 CONTEXTO DA REUNIÃO:
 {context}"""
@@ -64,11 +72,64 @@ SUMMARY_RULES = """Você vai produzir o registro estruturado da reunião em JSON
 em especial os §4 (fidelidade), §6 (requisitos) e §7 (decisões). Responda APENAS com o JSON."""
 
 
+TOOLS = [
+    {"type": "function", "function": {
+        "name": "send_email",
+        "description": "Prepara um e-mail sobre a reunião para os destinatários que o usuário informou. "
+                       "O usuário confirma antes do envio.",
+        "parameters": {"type": "object", "required": ["to", "subject", "body"], "properties": {
+            "to": {"type": "array", "items": {"type": "string"},
+                   "description": "Endereços exatamente como o usuário escreveu"},
+            "subject": {"type": "string"},
+            "body": {"type": "string", "description": "Texto do e-mail, fiel à reunião"},
+        }}}},
+    {"type": "function", "function": {
+        "name": "create_document",
+        "description": "Gera um arquivo para download com conteúdo da reunião (ata, decisões, tarefas, resumo, "
+                       "planilha, dashboard com gráficos).",
+        "parameters": {"type": "object", "required": ["format", "title", "content"], "properties": {
+            "format": {"type": "string", "enum": ["pdf", "docx", "xlsx", "csv", "html", "md"],
+                       "description": "pdf; docx (Word); xlsx (Excel) ou csv (planilha); html (página com "
+                                      "tabelas e gráficos, para dashboard); md (Markdown)"},
+            "title": {"type": "string"},
+            "content": {"type": "string", "description": (
+                "Conteúdo em Markdown, fiel à reunião: títulos ##, listas -, tabelas | col | col |. "
+                "Para xlsx, csv e html, ponha os dados em tabelas Markdown; no html, cada tabela com "
+                "uma coluna numérica (ex.: tarefas por responsável) vira um gráfico de barras.")},
+        }}}},
+]
+
+
+def _tool_text(tool: Optional[dict]) -> str:
+    """O texto que a ferramenta vai entregar a alguém: é ele que passa pela verificação.
+    Títulos (linhas com #) e linhas que são só um texto entre aspas ficam de fora: são
+    cabeçalho do documento, não fala de alguém da reunião. Citações no meio do texto continuam."""
+    if not tool:
+        return ""
+    args = tool.get("arguments") or {}
+    text = str(args.get("body") or args.get("content") or "")
+    keep = [line for line in text.splitlines()
+            if not line.lstrip().startswith("#") and not _QUOTED_LINE.fullmatch(line.strip())]
+    # Aspas sem ninguém falando antes (título, nome de documento) perdem as aspas; as que vêm
+    # depois de "disse", "afirmou", "Nome:" etc. continuam sendo conferidas com a transcrição.
+    return _QUOTE_ANY.sub(lambda m: m.group(0) if _SPEECH.search(m.string[max(0, m.start() - 40):m.start()])
+                          else m.group(1), "\n".join(keep))
+
+
+_CLAIMS_ACTION = re.compile(r"\b(gerei|criei|preparei|enviei|anexei)\b[^.\n]{0,40}\b(documento|arquivo|pdf|"
+                            r"word|docx|markdown|e-?mail)", re.IGNORECASE)
+_QUOTED_LINE = re.compile(r"[*_]*[\"“][^\"“”]+[\"”][*_]*")
+_QUOTE_ANY = re.compile(r"[\"“]([^\"“”\n]+)[\"”]")
+_SPEECH = re.compile(r"(disse|diz|afirmou|falou|comentou|declarou|perguntou|respondeu|explicou|"
+                     r"segundo \w+|nas palavras d\w+|:)\s*$", re.IGNORECASE)
+
+
 class ChatState(TypedDict, total=False):
     question: str
     context: str
     history: list[dict]
     answer: str
+    tool: Optional[dict]
     violations: list[str]
     attempts: int
 
@@ -94,10 +155,10 @@ class MeetingAgent(ILLMService):
     # ── Porta ILLMService ─────────────────────────────────────────────
 
     def chat(self, question: str, context: str, history: list[dict], summary_context: str = "",
-             user_id: str | None = None) -> str:
+             user_id: str | None = None) -> ChatReply:
         state = self._chat_graph.invoke({"question": question, "context": context, "history": history,
-                                         "attempts": 0, "violations": []})
-        return state["answer"]
+                                         "attempts": 0, "violations": [], "tool": None})
+        return ChatReply(state["answer"], state.get("tool"))
 
     def summarize(self, transcript: str, meeting_type: MeetingType = MeetingType.GENERAL) -> Summary:
         state = self._summary_graph.invoke({"transcript": transcript, "meeting_type": meeting_type, "attempts": 0})
@@ -111,7 +172,7 @@ class MeetingAgent(ILLMService):
         g = StateGraph(ChatState)
         g.add_node("answer", self._answer)
         g.add_node("verify", self._verify)
-        g.add_node("fallback", lambda s: {"answer": FALLBACK})
+        g.add_node("fallback", lambda s: {"answer": FALLBACK, "tool": None})
         g.add_edge(START, "answer")
         g.add_edge("answer", "verify")
         g.add_conditional_edges("verify", self._after_verify, ["answer", "fallback", END])
@@ -125,14 +186,19 @@ class MeetingAgent(ILLMService):
                     {"role": "user", "content": s["question"]}]
         if s.get("violations"):
             messages += [
-                {"role": "assistant", "content": s["answer"]},
+                {"role": "assistant", "content": s["answer"] or _tool_text(s.get("tool"))},
                 {"role": "user", "content": "Sua resposta anterior violou o contrato: " + "; ".join(s["violations"])
-                 + ". Responda de novo à mesma pergunta, corrigindo isso e sem mencionar esta correção."},
+                 + ". Responda de novo ao mesmo pedido, corrigindo isso e sem mencionar esta correção."},
             ]
-        return {"answer": self._model.complete(messages).strip(), "attempts": s.get("attempts", 0) + 1}
+        answer, tool = self._model.complete_tools(messages, TOOLS)
+        return {"answer": answer.strip(), "tool": tool, "attempts": s.get("attempts", 0) + 1}
 
     def _verify(self, s: ChatState) -> ChatState:
-        violations = check_answer(s["answer"], s["context"], s["question"])
+        text = _tool_text(s.get("tool")) or s["answer"]
+        violations = check_answer(text, s["context"], s["question"])
+        if not s.get("tool") and _CLAIMS_ACTION.search(s["answer"]):
+            violations.append("diz que gerou o arquivo ou preparou o e-mail sem usar a ferramenta; "
+                              "use create_document ou send_email")
         if violations:
             logger.warning("Resposta violou o contrato (tentativa %d): %s", s["attempts"], "; ".join(violations))
         return {"violations": violations}

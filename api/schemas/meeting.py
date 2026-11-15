@@ -27,9 +27,25 @@ class SummarySchema(BaseModel):
     decisions: list[DecisionSchema]
 
 
+class ChatActionSchema(BaseModel):
+    """Ação que o agente preparou no chat. E-mail: `pending` até POST .../send ou .../cancel.
+    Documento: `created`, baixar em GET .../document."""
+    id: str
+    type: Literal["email", "document"]
+    status: Literal["pending", "sent", "canceled", "created"]
+    to: list[str] = []
+    subject: str = ""
+    body: str = ""
+    format: str = Field("", description="pdf, docx, xlsx, csv, html ou md (documento)")
+    title: str = ""
+    filename: str = ""
+    sent_at: str = ""
+
+
 class ChatMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str
+    action: Optional[ChatActionSchema] = None
 
 
 class MeetingStatusResponse(BaseModel):
@@ -68,6 +84,8 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     meeting_id: str
+    action: Optional[ChatActionSchema] = Field(
+        None, description="Presente quando o pedido foi uma ação: e-mail para confirmar ou documento gerado")
 
 
 class PlatformSchema(BaseModel):
