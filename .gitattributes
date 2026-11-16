@@ -1,0 +1,10 @@
+# Fim de linha LF em todo arquivo de texto, também no Windows (S10-2, ADR-016): scripts e
+# arquivos lidos dentro dos containers Linux quebram com \r ("bad interpreter", "$'\r'").
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.wav binary
+*.webm binary
+*.gz binary

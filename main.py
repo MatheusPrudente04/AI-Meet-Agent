@@ -5,7 +5,9 @@ Modos de uso:
   streamlit run main.py              → Interface web Streamlit
   python main.py --test <audio.wav>  → Teste via terminal (sem UI)
   python main.py --api               → Sobe FastAPI via uvicorn
-  python main.py --worker            → Sobe Celery worker
+  python main.py --worker [FILAS]    → Worker de processamento (Celery); FILAS = transcribe,llm (padrão)
+  python main.py --bot-worker        → Worker do bot (fila "bot", uma reunião por vez)
+                                       Vários bots: um processo por perfil, BOT_CHROME_PROFILE=<pasta>
 """
 
 import sys
@@ -29,29 +31,50 @@ def run_streamlit() -> None:
 
 def run_api() -> None:
     """Sobe a FastAPI via uvicorn."""
+    from config.settings import get_settings
+    os.environ.setdefault("SERVICE_NAME", "api")
     subprocess.run(
         [
             sys.executable, "-m", "uvicorn",
             "api.main:app",
             "--host", "0.0.0.0",
-            "--port", "8000",
+            "--port", str(get_settings().api_port),
+            # Vários processos: cada um com seu pool de threads (ADR-015)
+            "--workers", str(get_settings().api_workers),
         ],
         check=True,
     )
 
 
-def run_worker() -> None:
-    """Sobe o Celery worker."""
+def run_worker(bot: bool = False, queues: str = "transcribe,llm") -> None:
+    """Sobe um worker Celery: processamento (padrão) ou bot."""
+    from pathlib import Path
+    from config.settings import get_settings
     cmd = [
         sys.executable, "-m", "celery",
         "-A", "worker.tasks.celery_app",
         "worker",
         "--loglevel=info",
+        # Sem a troca de mensagens entre workers: com pool solo, worker ocupado não responde e o
+        # Celery enchia o log de "missed heartbeat"/"clocks out of sync". A saúde usa o batimento
+        # próprio (infrastructure/observability.py), não isso.
+        "--without-gossip", "--without-mingle", "--without-heartbeat",
     ]
-    # Windows não suporta o pool padrão (prefork); solo roda tudo na thread principal
-    if sys.platform == "win32":
-        cmd += ["--pool=solo"]
-    subprocess.run(cmd, check=True)
+    # pool=solo: um trabalho por processo. Paralelismo = mais processos (ADR-015): o Whisper
+    # carrega o modelo uma vez e não convive bem com fork, e o navegador do bot roda no
+    # processo principal.
+    if bot:
+        # Um perfil do Chrome por bot: o nome do nó vem da pasta do perfil
+        profile = Path(get_settings().bot_chrome_profile).resolve().name
+        cmd += ["-Q", "bot", "--pool=solo", "-n", f"bot-{profile}@%h"]
+    else:
+        cmd += ["-Q", queues, "--pool=solo", "-n", f"{queues.replace(',', '-')}@%h"]
+    # O worker do bot confere a conta do Google ao subir (worker.tasks._check_bot_account).
+    env = {**os.environ, "SERVICE_NAME": "bot" if bot else f"worker-{queues.replace(',', '-')}",
+           "WORKER_QUEUES": "bot" if bot else queues}  # batimento (observabilidade)
+    if bot:
+        env["MEET_AGENT_BOT_WORKER"] = "1"
+    subprocess.run(cmd, check=True, env=env)
 
 
 def run_terminal_test(audio_path: str) -> None:
@@ -160,7 +183,11 @@ if __name__ == "__main__":
         run_terminal_test(sys.argv[idx + 1])
     elif "--api" in sys.argv:
         run_api()
+    elif "--bot-worker" in sys.argv:
+        run_worker(bot=True)
     elif "--worker" in sys.argv:
-        run_worker()
+        idx = sys.argv.index("--worker")
+        rest = sys.argv[idx + 1:]
+        run_worker(queues=rest[0] if rest and not rest[0].startswith("-") else "transcribe,llm")
     else:
         run_streamlit()

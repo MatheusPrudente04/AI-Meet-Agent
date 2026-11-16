@@ -1,97 +1,153 @@
 """
-bot_setup.py — Autenticacao automatica do bot (rodar UMA unica vez).
+bot_setup.py — Login manual da conta Google do bot.
 
-Usa undetected-chromedriver para fazer login sem ser bloqueado pelo Google.
-O perfil salvo em bot_chrome_profile e reutilizado pelo Playwright nas
-execucoes seguintes (S1).
+Abre o MESMO navegador que o bot usa (Chromium do Playwright) no perfil
+persistente e espera você concluir o login na janela. Usar outro navegador
+(ex.: Google Chrome instalado) no mesmo perfil invalida a sessão, porque as
+versões diferem.
+
+Uso:
+  python -m infrastructure.recorder.bot_setup
+  docker compose --profile bot run --rm --service-ports bot python -m infrastructure.recorder.bot_setup
+      (bot em container: abra http://localhost:6080/vnc.html e faça o login na tela que aparece)
 """
+import asyncio
 import os
 import sys
-import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
+LOGIN_TIMEOUT_S = 300
 
-def main():
-    from dotenv import load_dotenv
-    load_dotenv()
 
-    email = os.getenv("BOT_GOOGLE_EMAIL", "")
-    password = os.getenv("BOT_GOOGLE_PASSWORD", "")
-    profile_dir = os.getenv("BOT_CHROME_PROFILE", "./bot_chrome_profile")
+async def _logged_in(context) -> bool:
+    cookies = await context.cookies("https://accounts.google.com")
+    return any(c["name"] == "SID" for c in cookies)
 
-    if not email or not password:
-        print("\nConfigure no .env:")
-        print("   BOT_GOOGLE_EMAIL=seubot@gmail.com")
-        print("   BOT_GOOGLE_PASSWORD=sua_senha")
-        sys.exit(1)
 
-    import undetected_chromedriver as uc
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
+async def main() -> int:
+    from config.settings import get_settings
+    from playwright.async_api import async_playwright
 
-    print("\nMeet Agent Bot - Setup de autenticacao")
-    print(f"   Email: {email}")
-    print(f"   Perfil: {profile_dir}")
-    print("=" * 50)
-
+    profile_dir = os.path.abspath(get_settings().bot_chrome_profile)
     os.makedirs(profile_dir, exist_ok=True)
+    print(f"Perfil: {profile_dir}")
 
-    options = uc.ChromeOptions()
-    options.add_argument(f"--user-data-dir={os.path.abspath(profile_dir)}")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-
-    driver = uc.Chrome(options=options)
-    driver.set_page_load_timeout(30)
-
-    try:
-        print("\nNavegando para login do Google...")
-        driver.get("https://accounts.google.com/signin")
-        time.sleep(2)
-
-        print("Preenchendo email...")
-        email_field = WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="email"]'))
+    async with async_playwright() as pw:
+        context = await pw.chromium.launch_persistent_context(
+            profile_dir,
+            headless=False,
+            # No container Linux (S10-1) o Docker não dá ao Chromium o namespace do sandbox;
+            # o bot já roda com --no-sandbox, e o login usa o mesmo.
+            args=["--disable-blink-features=AutomationControlled"]
+                 + (["--no-sandbox"] if sys.platform.startswith("linux") else []),
+            ignore_default_args=["--enable-automation"],
         )
-        email_field.send_keys(email)
-        time.sleep(0.5)
-        driver.find_element(By.ID, "identifierNext").click()
-        time.sleep(3)
+        page = context.pages[0] if context.pages else await context.new_page()
+        await page.goto("https://accounts.google.com/", wait_until="domcontentloaded")
 
-        print("Preenchendo senha...")
-        password_field = WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="password"]'))
+        if await _logged_in(context):
+            print("Perfil já está logado.")
+            await context.close()
+            return 0
+
+        print(f"Faça o login da conta do bot na janela aberta (até {LOGIN_TIMEOUT_S // 60} min)...")
+        for _ in range(LOGIN_TIMEOUT_S):
+            await asyncio.sleep(1)
+            if await _logged_in(context):
+                await asyncio.sleep(3)  # deixa o Chromium gravar os cookies em disco
+                print("Login concluído. Perfil pronto para uso.")
+                await context.close()
+                return 0
+
+        print("ERRO: tempo esgotado sem login.", file=sys.stderr)
+        await context.close()
+        return 1
+
+
+# ── Credenciamento pela interface (task setup_bot, fila do bot) ───────────────────────
+
+WAIT_HUMAN_S = 600   # tempo para alguém concluir o login pela tela do bot
+AUTO_LOGIN_S = 45    # tempo para o login automático virar cookie de sessão
+
+
+async def credential(report, email: str = "", password: str = "", check_only: bool = False,
+                     wait_human_s: int = WAIT_HUMAN_S) -> str:
+    """Deixa o perfil do bot logado na conta do Google e devolve o status final.
+
+    report(status, mensagem) grava o andamento (BotAccountStore.set). Ordem:
+    1. perfil já logado → ready;
+    2. com e-mail e senha: digita os dois e espera a sessão;
+    3. sem eles, ou se o Google pedir verificação (código, celular, captcha): waiting_login,
+       e alguém conclui na tela do bot (noVNC). Nada aqui tenta contornar a verificação.
+    check_only: só confere (ready ou not_configured), sem abrir janela nem esperar ninguém.
+    """
+    from config.settings import get_settings
+    from playwright.async_api import async_playwright
+
+    profile_dir = os.path.abspath(get_settings().bot_chrome_profile)
+    os.makedirs(profile_dir, exist_ok=True)
+    if not check_only:
+        report("creating", "Abrindo o navegador do bot")
+    async with async_playwright() as pw:
+        context = await pw.chromium.launch_persistent_context(
+            profile_dir,
+            headless=check_only,
+            args=["--disable-blink-features=AutomationControlled"]
+                 + (["--no-sandbox"] if sys.platform.startswith("linux") else []),
+            ignore_default_args=["--enable-automation"],
         )
-        password_field.send_keys(password)
-        time.sleep(0.5)
-        driver.find_element(By.ID, "passwordNext").click()
-        time.sleep(3)
-
-        print("\nAguardando conclusao do login...")
-        wait = WebDriverWait(driver, 180)
-        wait.until(lambda d: "myaccount.google.com" in d.current_url or
-                  ("google.com" in d.current_url and "signin" not in d.current_url))
-
-        print("Login realizado com sucesso!")
-        print(f"Perfil salvo em: {profile_dir}")
-
-    except Exception as e:
-        print(f"\nAtencao - Erro na automacao: {e}")
-        print("   O navegador pode ter solicitado verificacao em 2 etapas.")
-        print("   Complete manualmente e pressione Enter...")
         try:
-            input()
-        except EOFError:
-            pass
-        print("Continuando...")
+            page = context.pages[0] if context.pages else await context.new_page()
+            await page.goto("https://accounts.google.com/", wait_until="domcontentloaded")
+            if await _logged_in(context):
+                report("ready", "Conta do bot conectada")
+                return "ready"
+            if check_only:
+                report("not_configured", "O bot ainda não está conectado a uma conta do Google")
+                return "not_configured"
 
-    finally:
-        time.sleep(2)
-        driver.quit()
-        print("Browser fechado. Perfil pronto para uso.")
+            if email and password:
+                report("creating", "Entrando na conta do bot")
+                if await _auto_login(page, context, email, password):
+                    report("ready", "Conta do bot conectada")
+                    return "ready"
+
+            report("waiting_login", "Conclua o login da conta do bot na tela abaixo"
+                   + (" (o Google pediu uma verificação)" if email and password else ""))
+            for _ in range(wait_human_s):
+                await asyncio.sleep(1)
+                if await _logged_in(context):
+                    await asyncio.sleep(3)  # deixa o Chromium gravar os cookies em disco
+                    report("ready", "Conta do bot conectada")
+                    return "ready"
+            report("error", f"Ninguém concluiu o login em {wait_human_s // 60} min. Tente de novo.")
+            return "error"
+        except Exception as exc:
+            report("error", f"Falha ao credenciar o bot: {str(exc).splitlines()[0][:200]}")
+            return "error"
+        finally:
+            await context.close()
+
+
+async def _auto_login(page, context, email: str, password: str) -> bool:
+    """Digita e-mail e senha nas telas padrão do Google. False se aparecer qualquer outra
+    tela (verificação em duas etapas, captcha, "navegador não seguro"): aí entra o humano."""
+    try:
+        await page.goto("https://accounts.google.com/signin", wait_until="domcontentloaded")
+        await page.fill('input[type="email"]', email, timeout=15000)
+        await page.click("#identifierNext")
+        await page.fill('input[type="password"]', password, timeout=15000)
+        await page.click("#passwordNext")
+    except Exception:
+        return False
+    for _ in range(AUTO_LOGIN_S):
+        await asyncio.sleep(1)
+        if await _logged_in(context):
+            await asyncio.sleep(3)
+            return True
+    return False
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(asyncio.run(main()))

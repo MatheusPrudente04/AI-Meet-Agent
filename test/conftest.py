@@ -11,11 +11,18 @@ from unittest.mock import MagicMock
 # Garante que o ROOT do projeto está no path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+# Rede de segurança: teste que escapar do container falso e chegar ao de verdade falha ao
+# conectar, em vez de escrever no Mongo/Redis reais do .env (aconteceu com uma rota nova em
+# 2026-11-15). O teste vivo do bot (MEET_TEST_URL) precisa do ambiente real.
+if not os.environ.get("MEET_TEST_URL"):
+    os.environ["MONGO_URI"] = "mongodb://127.0.0.1:9/?serverSelectionTimeoutMS=300"
+    os.environ["REDIS_URL"] = "redis://127.0.0.1:9/0"
+
 from domain.entities.transcript import Transcript, Segment
 from domain.entities.meeting import Meeting, Summary, Task, Decision
-from interface.transcriber import ITranscriber, TranscriptionError
-from interface.llm_services import ILLMService, LLMServiceError
-from repositories.meeting_repository import IMeetingRepository
+from domain.interfaces.transcriber import ITranscriber, TranscriptionError
+from domain.interfaces.llm_service import ILLMService, LLMServiceError
+from domain.interfaces.meeting_repository import IMeetingRepository
 
 
 @pytest.fixture

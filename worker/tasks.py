@@ -1,201 +1,168 @@
-"""
-worker/tasks.py — Tasks Celery para processamento assíncrono.
+"""worker/tasks.py — task Celery do processamento de reuniões (modo collab)."""
+import logging
+import os
 
-Ativado apenas em modo colaborativo (APP_MODE=collab).
-Cada áudio enviado vira uma task independente processada por um worker.
+from celery import Celery
+from celery.signals import setup_logging as celery_setup_logging
+from celery.signals import task_postrun, task_prerun, worker_ready
 
-WINDOWS SUPPORT: Se Celery não funcionar (ex: no Windows), usa threading em memória.
-"""
-
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-import uuid
-import threading
-import queue
-from datetime import datetime
-from typing import Dict, Any
-
+from config.logging_setup import bind_meeting, setup_logging
 from config.settings import get_settings
 
 settings = get_settings()
 
-# Store de status em memória (fallback para Windows)
-_task_status: Dict[str, str] = {}
-_task_status_lock = threading.Lock()
-_task_queue: queue.Queue = queue.Queue()
-_worker_started = False  # Flag para evitar múltiplas inicializações
-_worker_lock = threading.Lock()
-
-try:
-    from celery import Celery
-    celery_app = Celery(
-        "meet_agent",
-        broker=settings.redis_url,
-        backend=settings.redis_url,
-    )
-    celery_app.conf.update(
-        task_serializer="json",
-        result_serializer="json",
-        accept_content=["json"],
-        timezone="America/Sao_Paulo",
-        task_track_started=True,
-    )
-    HAS_CELERY = True
-except ImportError:
-    celery_app = None  # modo solo — Celery não instalado
-    HAS_CELERY = False
-
-
-def _set_status(meeting_id: str, status_value: str) -> None:
-    """
-    Atualiza status no Redis diretamente — sem importar o router da API.
-    FIX: o worker não pode importar _set_status de api/routers/meetings.py
-    pois isso cria dependência circular (worker → api → container → worker).
-    
-    WINDOWS SUPPORT: Se Redis não funcionar, usa memória local.
-    """
-    if HAS_CELERY:
-        # Modo collab com Celery — usa Redis
-        try:
-            import redis as redis_lib
-            r = redis_lib.from_url(settings.redis_url)
-            r.set(f"status:{meeting_id}", status_value, ex=86400)
-        except Exception:
-            # Fallback: atualiza também em memória
-            with _task_status_lock:
-                _task_status[meeting_id] = status_value
-    else:
-        # Modo Windows: store em memória
-        with _task_status_lock:
-            _task_status[meeting_id] = status_value
+celery_app = Celery("meet_agent", broker=settings.redis_url, backend=settings.redis_url)
+celery_app.conf.update(
+    task_serializer="json",
+    result_serializer="json",
+    accept_content=["json"],
+    timezone="America/Sao_Paulo",
+    task_track_started=True,
+    # Uma fila por etapa (ADR-015): transcrição e LLM não esperam uma pela outra, e cada
+    # uma escala com seus próprios workers. O bot grava uma reunião por worker (ADR-006).
+    task_routes={
+        "join_meeting": {"queue": "bot"},
+        "setup_bot": {"queue": "bot"},   # usa o mesmo perfil do Chrome: uma coisa por vez
+        "process_meeting": {"queue": "transcribe"},
+        "summarize_meeting": {"queue": "llm"},
+    },
+    # Prioridade 0 a 9 (0 primeiro): é como um usuário com muitos envios não passa na
+    # frente do primeiro envio de outro (container._priority).
+    broker_transport_options={
+        "priority_steps": list(range(10)),
+        "queue_order_strategy": "priority",
+        "sep": ":",
+        # Mais que o trabalho mais longo (transcrição de reunião longa); com acks_late,
+        # uma tarefa só volta para a fila se o worker morrer, não por demorar.
+        "visibility_timeout": 6 * 3600,
+    },
+    # Um worker reserva só a tarefa que está executando: a próxima fica na fila,
+    # disponível para outro worker livre e para a ordem de prioridade.
+    worker_prefetch_multiplier=1,
+    task_acks_late=True,
+)
 
 
-def get_task_status(meeting_id: str) -> str:
-    """Obtém status da task (do Redis ou da memória)."""
-    if HAS_CELERY:
-        try:
-            import redis as redis_lib
-            r = redis_lib.from_url(settings.redis_url)
-            status = r.get(f"status:{meeting_id}")
-            if status:
-                return status.decode() if isinstance(status, bytes) else status
-        except Exception:
-            pass
-    
-    # Fallback: consulta memória
-    with _task_status_lock:
-        return _task_status.get(meeting_id, "unknown")
+@celery_setup_logging.connect
+def _use_project_logging(**_):
+    """Substitui o formato do Celery pelo do projeto (id da reunião em toda linha)."""
+    setup_logging()
 
 
-def process_meeting_task_fn(meeting_id: str, audio_path: str, title: str) -> dict:
-    """
-    Lógica real de processamento — separada do decorator Celery
-    para ser testável sem broker.
-    """
-    from domain.entities.meeting import Meeting
-    from use_cases.transcribe_meeting import TranscribeMeetingInput
-    from use_cases.summarize_meeting import SummarizeMeetingInput
+@celery_app.task(name="join_meeting")
+def join_meeting_task(meeting_id: str, meeting_url: str, title: str) -> dict:
+    from domain.entities.meeting import MeetingStatus
+    from infrastructure.recorder.bot_job import run_bot_job
     from presentation.container import get_container
 
+    bind_meeting(meeting_id)
+    # Com acks_late, a tarefa de um worker que morreu volta para a fila; se a reunião
+    # já passou dessa etapa, não reentra (a gravação de antes seria sobrescrita).
+    current = get_container().repository.find_by_id(meeting_id)
+    if current is not None and current.status is not MeetingStatus.PENDING:
+        logging.getLogger(__name__).warning("[%s] bot já atuou nesta reunião (status=%s); ignorando",
+                                            meeting_id, current.status.value)
+        return {"meeting_id": meeting_id, "status": current.status.value, "error": current.error}
+    meeting = run_bot_job(meeting_id, meeting_url, title)
+    from infrastructure import observability as obs
+    obs.incr("bot_meetings_total", {"result": "error" if meeting.status is MeetingStatus.ERROR else "recorded"})
+    return {"meeting_id": meeting.id, "status": meeting.status.value, "error": meeting.error}
+
+
+# Sem retry automático: falhas ficam no documento (status=error) e reprocessar o
+# mesmo id é seguro (ProcessMeetingUC é idempotente) — inclusive a reentrega do acks_late.
+@celery_app.task(name="process_meeting")
+def process_meeting_task(meeting_id: str, audio_path: str, title: str) -> dict:
+    """Etapa 1: transcrição. Ao terminar, põe a reunião na fila do LLM."""
+    from domain.entities.meeting import MeetingStatus
+    from presentation.container import get_container
+    from use_cases.process_meeting import ProcessMeetingInput
+
+    bind_meeting(meeting_id)
     container = get_container()
-
-    # 1. Transcrição
-    _set_status(meeting_id, "transcribing")  # FIX: era omitido
-    t_result = container.transcribe_meeting.execute(
-        TranscribeMeetingInput(audio_path=audio_path, with_diarization=True)
-    )
-    if not t_result.success:
-        _set_status(meeting_id, "error")      # FIX: era omitido
-        return {"status": "error", "error": t_result.error_message}
-
-    transcript = t_result.transcript
-    meeting = Meeting(
-        id=meeting_id,
-        title=title,
-        started_at=datetime.now(),
-        audio_path=audio_path,
-        transcript_text=transcript.full_text,
-        transcript_formatted=transcript.formatted,
-        participants=transcript.speakers,
-        duration_minutes=transcript.duration_minutes,
-    )
-
-    # 2. Resumo
-    _set_status(meeting_id, "summarizing")   # FIX: era omitido
-    s_result = container.summarize_meeting.execute(
-        SummarizeMeetingInput(meeting=meeting)
-    )
-    if not s_result.success:
-        _set_status(meeting_id, "error")      # FIX: era omitido
-        return {"status": "error", "error": s_result.error_message}
-
-    # 3. Persistir reunião no repositório               # FIX: era omitido
-    meeting.summary = s_result.summary
-    container.repository.save(meeting)
-
-    _set_status(meeting_id, "done")           # FIX: era omitido
-    return {"status": "done", "meeting_id": meeting_id}
+    meeting = container.process_meeting.transcribe(ProcessMeetingInput(meeting_id, audio_path, title))
+    _record_stage("transcribe", meeting, "transcribe_s")
+    if meeting.status is not MeetingStatus.ERROR:
+        container.enqueue(meeting, "llm")
+    return {"meeting_id": meeting.id, "status": meeting.status.value, "error": meeting.error}
 
 
-if celery_app:
-    @celery_app.task(
-        name="process_meeting",
-        bind=True,
-        max_retries=3,
-        default_retry_delay=30,
-    )
-    def process_meeting_task(self, meeting_id: str, audio_path: str, title: str):
-        try:
-            return process_meeting_task_fn(meeting_id, audio_path, title)
-        except Exception as exc:
-            raise self.retry(exc=exc)
-else:
-    # FALLBACK WINDOWS: sem Celery, usa threading em memória
-    def process_meeting_task(meeting_id: str, audio_path: str, title: str):
-        """
-        Fallback para Windows/desenvolvimento local.
-        Enfileira a task e processa em thread separada.
-        """
-        _task_queue.put((meeting_id, audio_path, title))
-        return {"status": "queued", "meeting_id": meeting_id}
+@celery_app.task(name="summarize_meeting")
+def summarize_meeting_task(meeting_id: str) -> dict:
+    """Etapa 2: resumo."""
+    from presentation.container import get_container
 
-    process_meeting_task.delay = process_meeting_task  # compatibilidade com .delay()
+    bind_meeting(meeting_id)
+    meeting = get_container().process_meeting.summarize(meeting_id)
+    _record_stage("summarize", meeting, "summarize_s")
+    return {"meeting_id": meeting.id, "status": meeting.status.value, "error": meeting.error}
 
 
-def _worker_loop():
-    """
-    Loop do worker que processa tasks da fila em memória.
-    Executa em thread separada (background).
-    Apenas usado quando Celery não está disponível (Windows).
-    """
-    while True:
-        try:
-            meeting_id, audio_path, title = _task_queue.get(timeout=1)
-            result = process_meeting_task_fn(meeting_id, audio_path, title)
-            print(f"✅ Task {meeting_id} concluída: {result['status']}")
-        except queue.Empty:
-            continue
-        except Exception as e:
-            print(f"❌ Erro ao processar task: {e}")
+@celery_app.task(name="setup_bot")
+def setup_bot_task(check_only: bool = False) -> str:
+    """Credencia a conta do Google do bot (botão "Credenciar bot") ou só confere (check_only)."""
+    import asyncio
+    from infrastructure.recorder.bot_setup import credential
+    from presentation.container import get_container
+
+    settings = get_settings()
+    store = get_container().bot_account
+    return asyncio.run(credential(store.set, settings.bot_google_email, settings.bot_google_password,
+                                  check_only=check_only))
 
 
-def start_background_worker() -> None:
-    """
-    Inicia worker em background thread (apenas para Windows/desenvolvimento).
-    Chamado uma única vez na inicialização.
-    Protegido contra múltiplas inicializações com flag thread-safe.
-    """
-    global _worker_started
-    
-    if HAS_CELERY:
-        return  # Não precisa do fallback com Celery
-    
-    with _worker_lock:
-        if _worker_started:
-            return  # Já foi iniciado
-        
-        _worker_started = True
-        worker_thread = threading.Thread(target=_worker_loop, daemon=True)
-        worker_thread.start()
-        print("🔧 Worker em background (modo Windows) iniciado com sucesso")
+@worker_ready.connect
+def _check_bot_account(**_):
+    """Worker do bot no ar: confere se o perfil está logado, para a interface saber se pode
+    mandar o bot (o perfil pode ter sido logado à mão ou ter perdido a sessão)."""
+    if os.environ.get("MEET_AGENT_BOT_WORKER"):
+        setup_bot_task.delay(check_only=True)
+
+
+# ── Batimento (observabilidade): vivo mesmo ocupado ──────────────────
+_current: dict = {}
+
+
+@worker_ready.connect
+def _start_heartbeat(sender=None, **_):
+    import socket
+    import threading
+    import time as _time
+    from infrastructure import observability as obs
+
+    queues = [q for q in os.environ.get("WORKER_QUEUES", "").split(",") if q]
+    if not queues:
+        return
+    host = getattr(sender, "hostname", None) or socket.gethostname()
+
+    def beat():
+        while True:
+            obs.heartbeat(queues, host, dict(_current) or None)
+            _time.sleep(obs.HEARTBEAT_S)
+
+    threading.Thread(target=beat, name="heartbeat", daemon=True).start()
+
+
+@task_prerun.connect
+def _task_started(task=None, args=None, **_):
+    import time as _time
+    _current.clear()
+    _current.update(name=getattr(task, "name", "?"), meeting_id=(args or [""])[0] if args else "",
+                    since=_time.time())
+
+
+@task_postrun.connect
+def _task_finished(**_):
+    _current.clear()
+
+
+def _record_stage(stage: str, meeting, metric_key: str) -> None:
+    """Duração e resultado de uma etapa do pipeline (observabilidade)."""
+    from domain.entities.meeting import MeetingStatus
+    from infrastructure import observability as obs
+    failed = meeting.status is MeetingStatus.ERROR
+    obs.incr("pipeline_stage_total", {"stage": stage, "result": "error" if failed else "ok"})
+    if not failed and meeting.metrics.get(metric_key) is not None:
+        obs.observe("pipeline_stage_seconds", float(meeting.metrics[metric_key]), {"stage": stage})
+        if stage == "transcribe" and meeting.duration_minutes:
+            obs.observe("meeting_audio_minutes", float(meeting.duration_minutes))

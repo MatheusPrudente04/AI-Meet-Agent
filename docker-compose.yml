@@ -1,114 +1,139 @@
-version: "3.9"
+# Meet Agent — produção local (APP_MODE=collab).
+#
+#   docker compose up -d --build --remove-orphans → mongo, redis, api, workers (transcribe, llm), streamlit
+#   python main.py --bot-worker           → no host: o bot usa o Chromium e o login do Google locais
+#
+# Portas no host: API 8001, Streamlit 8501, Redis 6380, Mongo 27018
+# (fora das portas padrão para não colidir com serviços já instalados na máquina).
+# Na rede local: interface e API abertas (http://<ip-desta-máquina>:8501 de outro aparelho);
+# Mongo, Redis e o noVNC do bot só nesta máquina (127.0.0.1): não têm senha.
 
-# ─────────────────────────────────────────────────────────────────────────
-# Meet Agent — docker-compose
-#
-# Modo solo  (padrão):
-#   docker-compose up streamlit
-#
-# Modo collab (servidor completo):
-#   docker-compose --profile collab up
-# ─────────────────────────────────────────────────────────────────────────
+# A imagem é construída uma vez, pelo serviço api; worker e streamlit a reutilizam.
+# Com `build` nos três, o compose exportava a mesma imagem três vezes em paralelo e
+# enchia o disco do Docker (2026-11-15).
+x-app: &app
+  image: meet-agent
+  pull_policy: never   # imagem local, nunca do Docker Hub
+  env_file: .env
+  environment: &app-env
+    APP_MODE: collab
+    TZ: America/Sao_Paulo   # mesmo fuso do host: o bot grava started_at fora do container
+    API_PORT: "8000"
+    API_WORKERS: "2"
+    MONGO_URI: mongodb://mongo:27017
+    REDIS_URL: redis://redis:6379/0
+    OLLAMA_BASE_URL: http://host.docker.internal:11434/v1
+    CAPTURE_ENDPOINT: ""
+  volumes:
+    - ./data:/app/data
+    - model_cache:/root/.cache/huggingface
+  depends_on:
+    redis:
+      condition: service_healthy
+    mongo:
+      condition: service_healthy
+  restart: unless-stopped
 
 services:
-
-  # ── Streamlit — interface web ─────────────────────────────────────────
-  streamlit:
-    build:
-      context: .
-      dockerfile: Dockerfile.streamlit
+  api:
+    <<: *app
+    build: .
+    command: python main.py --api
     ports:
-      - "8501:8501"
-    env_file: .env
-    environment:
-      - APP_MODE=collab
-      - MONGO_URI=mongodb://mongo:27017/meetagent
-    volumes:
-      - ./data:/app/data
-    restart: unless-stopped
+      - "0.0.0.0:8001:8000"   # rede local
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
 
-  # ── FastAPI — backend colaborativo ────────────────────────────────────
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
+  # Uma fila por etapa (ADR-015). Mais paralelismo: `docker compose up -d --scale worker-transcribe=2`
+  # (cada worker de transcrição carrega o Whisper na memória; o do LLM só faz pedidos ao Ollama,
+  # que atende OLLAMA_NUM_PARALLEL pedidos por vez).
+  worker-transcribe:
+    <<: *app
+    command: python main.py --worker transcribe
+
+  worker-llm:
+    <<: *app
+    command: python main.py --worker llm
+
+  streamlit:
+    <<: *app
+    command: >
+      streamlit run presentation/streamlit/app.py
+      --server.port=8501 --server.address=0.0.0.0 --server.headless=true
     ports:
-      - "8000:8000"
-    env_file: .env
-    environment:
-      - APP_MODE=collab
-      - MONGO_URI=mongodb://mongo:27017/meetagent
-      - REDIS_URL=redis://redis:6379/0
-      - OLLAMA_BASE_URL=http://ollama:11434/v1
-    volumes:
-      - ./data:/app/data
-    depends_on:
-      redis:
-        condition: service_healthy
-      mongo:
-        condition: service_healthy
-    restart: unless-stopped
-    profiles: ["collab"]
+      - "0.0.0.0:8501:8501"   # rede local: http://<ip-desta-máquina>:8501
 
-  # ── Celery worker — processamento assíncrono ──────────────────────────
-  worker:
+  # Bot em container (S10-1, ADR-016). Opcional enquanto o worker do host existir: os dois
+  # consomem a fila "bot". Login da conta do bot, uma vez:
+  #   docker compose --profile bot run --rm --service-ports bot python -m infrastructure.recorder.bot_setup
+  #   → abra http://localhost:6080/vnc.html
+  # Depois: docker compose --profile bot up -d bot
+  bot:
+    <<: *app
+    image: meet-agent-bot
     build:
       context: .
-      dockerfile: Dockerfile
-    command: python main.py --worker
-    env_file: .env
+      dockerfile: Dockerfile.bot
+    profiles: ["bot"]
+    command: python main.py --bot-worker
     environment:
-      - APP_MODE=collab
-      - MONGO_URI=mongodb://mongo:27017/meetagent
-      - REDIS_URL=redis://redis:6379/0
-      - OLLAMA_BASE_URL=http://ollama:11434/v1
+      <<: *app-env
+      CAPTURE_ENDPOINT: http://api:8000   # o navegador do bot fala com a API pela rede do compose
+      BOT_CHROME_PROFILE: /home/bot/profile
+      BOT_HEADLESS: "false"
     volumes:
       - ./data:/app/data
+      - bot_profile:/home/bot/profile     # login do Google da conta do bot
+    ports:
+      - "127.0.0.1:6080:6080"             # noVNC, só nesta máquina
+    shm_size: 1gb                         # o Chromium usa /dev/shm; o padrão de 64 MB derruba abas
+
+  # Ferramenta, não sobe com `up` (perfil tools). Mesmo comando em Windows, macOS e Linux (S10-3):
+  #   docker compose run --rm backup                    → backups/mongo-<data>.archive.gz
+  #   docker compose run --rm backup restore backups/<arquivo>
+  backup:
+    image: mongo:7
+    profiles: ["tools"]
+    working_dir: /app
+    entrypoint: ["bash", "scripts/mongo_backup.sh"]
+    environment:
+      TZ: America/Sao_Paulo
+      MONGO_URI: mongodb://mongo:27017
+      AUDIO_RETENTION_DAYS: ${AUDIO_RETENTION_DAYS:-30}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - ./backups:/app/backups
+      - ./data/audio:/app/data/audio
     depends_on:
-      redis:
-        condition: service_healthy
       mongo:
         condition: service_healthy
-      api:
-        condition: service_started
-    restart: unless-stopped
-    profiles: ["collab"]
-    healthcheck:
-      disable: true
-    deploy:
-      replicas: 2
 
-  # ── Redis — broker do Celery ──────────────────────────────────────────
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6380:6379"   # só esta máquina (sem senha): o worker do bot no host usa
     volumes:
       - redis_data:/data
     restart: unless-stopped
-    profiles: ["collab"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # ── MongoDB — banco colaborativo ─────────────────────────────────────
   mongo:
     image: mongo:7
     ports:
-      - "27017:27017"
+      - "127.0.0.1:27018:27017"   # só esta máquina (sem senha)
     volumes:
       - mongo_data:/data/db
     restart: unless-stopped
-    profiles: ["collab"]
     healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh --quiet
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand('ping').ok"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -116,3 +141,5 @@ services:
 volumes:
   redis_data:
   mongo_data:
+  model_cache:
+  bot_profile:

@@ -64,8 +64,6 @@ class ProjectValidator:
             "infrastructure/exporters",
             "infrastructure/calendar",
             "use_cases",
-            "interface",
-            "repositories",
             "presentation",
             "presentation/streamlit",
             "api",
@@ -78,7 +76,7 @@ class ProjectValidator:
         for dir_name in required_dirs:
             dir_path = self.root / dir_name
             if dir_path.exists():
-                print(f"  ✅ {dir_name}/")
+                print(f"   {dir_name}/")
             else:
                 print(f"  ❌ {dir_name}/ (MISSING)")
                 self.issues["structure"].append(f"Missing: {dir_name}")
@@ -107,22 +105,24 @@ class ProjectValidator:
             "domain/interfaces/exporter.py",
 
             # Interfaces
-            "interface/transcriber.py",
-            "interface/llm_services.py",
+            "domain/interfaces/transcriber.py",
+            "domain/interfaces/llm_service.py",
 
             # Repositories
-            "repositories/meeting_repository.py",
+            "domain/interfaces/meeting_repository.py",
 
             # Infrastructure
             "infrastructure/json_meeting_repository.py",
             "infrastructure/transcriber/whisper_transcriber.py",
             "infrastructure/transcriber/pyannote_diarizer.py",
-            "infrastructure/llm/langchain_llm_service.py",
+            "infrastructure/llm/meeting_agent.py",
+            "infrastructure/llm/model_client.py",
             "infrastructure/llm/prompt_builder.py",
             "infrastructure/llm/sentiment_analyzer.py",
             "infrastructure/recorder/playwright_bot_recorder.py",
             "infrastructure/recorder/run_bot.py",
-            "infrastructure/recorder/audio_capture.js",
+            "infrastructure/recorder/extension/background.js",
+            "infrastructure/recorder/extension/offscreen.js",
             "infrastructure/exporters/markdown_exporter.py",
             "infrastructure/calendar/google_calendar_service.py",
 
@@ -132,7 +132,9 @@ class ProjectValidator:
             "use_cases/chat_with_meeting.py",
             "use_cases/analyze_sentiment.py",
             "use_cases/fetch_meeting_context.py",
-            "use_cases/record_meeting.py",
+            "use_cases/process_meeting.py",
+            "infrastructure/mongo_meeting_repository.py",
+            "infrastructure/meeting_serialization.py",
 
             # Presentation
             "presentation/container.py",
@@ -151,9 +153,9 @@ class ProjectValidator:
         for file_name in critical_files:
             file_path = self.root / file_name
             if file_path.exists():
-                print(f"  ✅ {file_name}")
+                print(f"   {file_name}")
             else:
-                print(f"  ⚠️  {file_name} (MISSING)")
+                print(f"   {file_name} (MISSING)")
                 self.issues["missing_files"].append(file_name)
         print()
 # Verificação de imports específicos (exemplo para Google Calendar Service )
@@ -164,8 +166,8 @@ class ProjectValidator:
         sys.path.insert(0, str(self.root))
 
         test_imports = [
-            ("interface.transcriber", "ITranscriber"),
-            ("interface.llm_services", "ILLMService"),
+            ("domain.interfaces.transcriber", "ITranscriber"),
+            ("domain.interfaces.llm_service", "ILLMService"),
             ("config.settings", "get_settings"),
             ("domain.entities.meeting", "Meeting"),           
             ("domain.entities.meeting_type", "MeetingType"),  
@@ -173,17 +175,17 @@ class ProjectValidator:
             ("domain.entities.calendar_event", "CalendarEvent"),
             ("domain.entities.sentiment_result", "SentimentResult"),
             ("domain.interfaces.calendar_service", "ICalendarService"),
-            ("repositories.meeting_repository", "IMeetingRepository"),
+            ("domain.interfaces.meeting_repository", "IMeetingRepository"),
             ("infrastructure.json_meeting_repository", "JsonMeetingRepository"),
             ("infrastructure.transcriber.whisper_transcriber", "WhisperTranscriber"),
-            ("infrastructure.llm.langchain_llm_service", "LangChainLLMService"),
+            ("infrastructure.llm.meeting_agent", "MeetingAgent"),
             ("infrastructure.llm.prompt_builder", "PromptBuilder"),
             ("infrastructure.llm.sentiment_analyzer", "SentimentAnalyzer"),
             ("use_cases.transcribe_meeting", "TranscribeMeetingUC"),
             ("use_cases.summarize_meeting", "SummarizeMeetingUC"),
             ("use_cases.chat_with_meeting", "ChatWithMeetingUC"),
             ("use_cases.analyze_sentiment", "AnalyzeSentimentUC"),
-            ("use_cases.record_meeting", "RecordMeetingUC"),
+            ("use_cases.process_meeting", "ProcessMeetingUC"),
             ("presentation.container", "get_container"),
         ]
 
@@ -192,10 +194,10 @@ class ProjectValidator:
             try:
                 mod = __import__(module_name, fromlist=[class_name])
                 getattr(mod, class_name)
-                print(f"  ✅ {module_name}.{class_name}")  
+                print(f"   {module_name}.{class_name}")  
             except Exception as e:
                 failed += 1
-                print(f"  ❌ {module_name}.{class_name}")  
+                print(f"   {module_name}.{class_name}")  
                 print(f"     └─ {str(e)[:80]}")
                 self.issues["imports"].append(f"{module_name}.{class_name}: {str(e)[:60]}")
 

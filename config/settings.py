@@ -1,7 +1,7 @@
 from enum import Enum
 from functools import lru_cache
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import Field, model_validator
 
 
 class AppMode(str, Enum):
@@ -29,18 +29,27 @@ class Settings(BaseSettings):
 
     # ── Storage ───────────────────────────────────────────────────────
     storage_path: str = "data/meetings"
-    database_url: str = ""
     mongo_uri: str = "mongodb://mongo:27017/meetagent"
     mongo_db: str = "meetagent"
     audio_storage_path: str = "data/audio"
-    s3_bucket: str = ""
+    documents_path: str = "data/documents"   # arquivos gerados pelo chat (create_document)
 
     # ── Cache e API ───────────────────────────────────────────────────
     redis_url: str = "redis://localhost:6379/0"
-    api_host: str = "0.0.0.0"
     api_port: int = 8000
-    secret_key: str = "dev-secret-change-in-prod"
     allowed_origins: list[str] = Field(default=["http://localhost:8501"])
+    # Chave exigida no cabeçalho X-API-Key (ADR-007). Obrigatória em collab.
+    api_key: str = ""
+    # Login de usuários (ADR-011)
+    session_days: int = 30
+    allow_registration: bool = True
+    max_upload_mb: int = 500
+    capture_max_chunk_mb: int = 10
+    capture_max_session_mb: int = 1024
+    # Concorrência (ADR-015)
+    api_workers: int = 1                 # processos do uvicorn
+    chat_max_concurrent: int = 2         # chamadas de chat ao LLM ao mesmo tempo, por processo da API
+    rate_limit_per_minute: int = 30      # envios, bots e perguntas por usuário por minuto (0 = sem limite)
 
     # ── Áudio ─────────────────────────────────────────────────────────
     max_audio_size_mb: int = 25
@@ -50,18 +59,29 @@ class Settings(BaseSettings):
     huggingface_token: str = ""
     diarization_device: str = "cpu"
 
-    # ── Reunião ───────────────────────────────────────────────────────
-    default_meeting_type: str = "general"
-
     # ── Google Calendar ───────────────────────────────────────────────
-    google_credentials_path: str = "credentials.json"
-    google_token_path: str = "token.json"
+    # Em data/google (fora do git e montado nos containers). Login uma vez, no computador:
+    # python -m infrastructure.calendar.calendar_setup
+    google_credentials_path: str = "data/google/credentials.json"
+    google_token_path: str = "data/google/token.json"
     enable_calendar: bool = False
 
     # ── Provider LLM ─────────────────────────────────────────────────
     llm_provider: str = "openai"            # "openai" | "ollama" | "openrouter"
+    # Contrato do agente (ADR-014): vai inteiro no prompt de sistema do chat e do resumo.
+    agent_contract_path: str = "SPEC_CONTRACT.md"
+
+    # Quanto de transcrição cabe num único pedido ao LLM (caracteres; ~2,6 por
+    # token em português, medido na ADR-010). Acima disso o resumo é feito em
+    # partes e o chat recebe só os trechos relevantes.
+    llm_context_chars: int = 30000
 
     # Ollama (local)
+    # Teto da janela pedida ao Ollama; o padrão dele (4096) corta reuniões em silêncio.
+    # Janela de contexto do Ollama, a mesma em todo pedido (ADR-021): trocar de janela recarrega
+    # o modelo (~50 s). 32k cobre chat e resumo de reunião longa; ~7 GB com qwen2.5:7b.
+    ollama_num_ctx_max: int = 32768
+    ollama_keep_alive: str = "30m"     # quanto tempo o modelo fica carregado sem uso
     ollama_base_url: str = "http://localhost:11434/v1"
     ollama_model: str = "nemotron-mini"
 
@@ -71,16 +91,29 @@ class Settings(BaseSettings):
     openrouter_site_url: str = ""
     openrouter_site_name: str = "Meet Agent"
 
-    # ── faster-whisper ────────────────────────────────────────────────
-    faster_whisper_model: str = "large-v3"
-    faster_whisper_device: str = "auto"
-    faster_whisper_compute_type: str = "int8"
-
     # ── Bot de reunião ────────────────────────────────────────────────
-    recorder_provider: str = "none"
     bot_chrome_profile: str = "./bot_chrome_profile"
     bot_name: str = "Meet Agent"
     bot_headless: bool = False
+    # Diagnóstico: salva amostras do DOM do Meet em data/audio/<id>.dom.jsonl (Sprint 2B)
+    bot_debug_dom: bool = False
+    # Endereço da API visto pelo navegador do bot (vazio = http://127.0.0.1:API_PORT)
+    capture_endpoint: str = ""
+    # Credenciamento pela interface (botão "Credenciar bot"). Com e-mail e senha da conta do bot,
+    # o login é tentado sozinho; sem eles, ou se o Google pedir verificação, alguém conclui pela
+    # tela do bot (noVNC) em BOT_VNC_URL.
+    bot_google_email: str = ""
+    bot_google_password: str = ""
+    bot_vnc_url: str = "http://localhost:6080/vnc.html?autoconnect=true&resize=scale"
+
+    # ── SMTP / E-mail ─────────────────────────────────────────────────
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = ""
+    # Quem recebe o alerta de /health fora do ar (scripts/health_alert.py, S11-4)
+    alert_email: str = ""
 
     # ── Properties ───────────────────────────────────────────────────
 
@@ -101,8 +134,38 @@ class Settings(BaseSettings):
         return self.llm_provider == "ollama"
 
     @property
+    def email_enabled(self) -> bool:
+        return bool(self.smtp_user and self.smtp_password)
+
+    @property
+    def capture_url(self) -> str:
+        return self.capture_endpoint or f"http://127.0.0.1:{self.api_port}"
+
+    @property
     def use_local_whisper(self) -> bool:
         return self.whisper_transcriber == "local"
+
+    @model_validator(mode="after")
+    def _validate_collab(self) -> "Settings":
+        """Em produção (collab), falha na partida em vez de falhar no meio de uma reunião."""
+        if not self.is_collab:
+            return self
+        missing = []
+        if not self.mongo_uri:
+            missing.append("MONGO_URI")
+        if not self.redis_url:
+            missing.append("REDIS_URL")
+        if not self.api_key:
+            missing.append("API_KEY")
+        if not self.use_local_whisper and not self.openai_api_key:
+            missing.append("OPENAI_API_KEY (ou WHISPER_TRANSCRIBER=local)")
+        if self.llm_provider == "openai" and not self.openai_api_key:
+            missing.append("OPENAI_API_KEY (LLM_PROVIDER=openai)")
+        if self.llm_provider == "openrouter" and not self.openrouter_api_key:
+            missing.append("OPENROUTER_API_KEY")
+        if missing:
+            raise ValueError("APP_MODE=collab exige no .env: " + ", ".join(dict.fromkeys(missing)))
+        return self
 
     model_config = {
         "env_file": ".env",

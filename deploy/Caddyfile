@@ -1,0 +1,15 @@
+# Proxy reverso com HTTPS automático (Let's Encrypt) — S11-2. Usado por docker-compose.prod.yml.
+# DOMAIN vem do .env; o DNS de DOMAIN e de api.DOMAIN precisa apontar para o servidor, com as
+# portas 80 e 443 abertas, antes de subir (é assim que o certificado é emitido).
+
+# Interface (Streamlit). O Caddy repassa o WebSocket do Streamlit sem configuração extra.
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy streamlit:8501
+}
+
+# API (e o contrato em /docs) para o front novo.
+api.{$DOMAIN} {
+	encode gzip
+	reverse_proxy api:8000
+}

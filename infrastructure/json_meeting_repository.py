@@ -1,94 +1,62 @@
 import json
-import os
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from domain.entities.meeting import Meeting, Summary, Task, Decision
-from repositories.meeting_repository import IMeetingRepository
-from config.settings import get_settings
+from domain.entities.meeting import Meeting
+from domain.interfaces.meeting_repository import IMeetingRepository
+from infrastructure.meeting_serialization import meeting_from_dict, meeting_to_dict
 
 
 class JsonMeetingRepository(IMeetingRepository):
-    """Persistência local em JSON — modo solo."""
+    """Persistência local em JSON — modo solo (desenvolvimento)."""
 
-    def __init__(self, storage_path: str | None = None) -> None:
-        path = storage_path or get_settings().storage_path
-        self._base = Path(path)
+    def __init__(self, storage_path: str) -> None:
+        self._base = Path(storage_path)
         self._base.mkdir(parents=True, exist_ok=True)
 
     def save(self, meeting: Meeting) -> None:
-        with open(self._base / f"{meeting.id}.json", "w", encoding="utf-8") as f:
-            json.dump(self._serialize(meeting), f, ensure_ascii=False, indent=2)
+        data = meeting_to_dict(meeting)
+        stored = self._raw(meeting.id)  # a conversa gravada prevalece: só o chat escreve nela
+        data["chat_history"] = stored.get("chat_history", []) if stored else []
+        self._write(meeting.id, data)
+
+    def append_chat(self, meeting_id: str, messages: list[dict]) -> None:
+        data = self._raw(meeting_id)
+        if data is not None:
+            data["chat_history"] = [*data.get("chat_history", []), *messages]
+            self._write(meeting_id, data)
+
+    def set_chat_history(self, meeting_id: str, chat_history: list[dict]) -> None:
+        data = self._raw(meeting_id)
+        if data is not None:
+            data["chat_history"] = chat_history
+            self._write(meeting_id, data)
+
+    def _raw(self, meeting_id: str):
+        path = self._base / f"{meeting_id}.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+    def _write(self, meeting_id: str, data: dict) -> None:
+        with open(self._base / f"{meeting_id}.json", "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2, default=lambda d: d.isoformat())
 
     def find_by_id(self, meeting_id: str) -> Optional[Meeting]:
-        p = self._base / f"{meeting_id}.json"
-        if not p.exists():
+        path = self._base / f"{meeting_id}.json"
+        if not path.exists():
             return None
-        with open(p, encoding="utf-8") as f:
-            return self._deserialize(json.load(f))
+        return meeting_from_dict(json.loads(path.read_text(encoding="utf-8")))
 
-    def list_all(self) -> list[Meeting]:
-        meetings = []
-        for f in sorted(self._base.glob("*.json"), reverse=True):
-            with open(f, encoding="utf-8") as fp:
-                meetings.append(self._deserialize(json.load(fp)))
-        return meetings
+    def list_all(self, owner_id: Optional[str] = None) -> list[Meeting]:
+        meetings = [
+            meeting_from_dict(json.loads(p.read_text(encoding="utf-8")))
+            for p in self._base.glob("*.json")
+        ]
+        if owner_id is not None:
+            meetings = [m for m in meetings if m.owner_id == owner_id]
+        return sorted(meetings, key=lambda m: m.started_at, reverse=True)
+
+    def find_by(self, **fields) -> list[Meeting]:
+        return [m for m in self.list_all() if all(getattr(m, k) == v for k, v in fields.items())]
 
     def delete(self, meeting_id: str) -> None:
-        p = self._base / f"{meeting_id}.json"
-        if p.exists():
-            os.remove(p)
-
-    def _serialize(self, m: Meeting) -> dict:
-        data: dict = {
-            "id": m.id,
-            "title": m.title,
-            "started_at": m.started_at.isoformat(),
-            "audio_path": m.audio_path,
-            "transcript_text": m.transcript_text,
-            "transcript_formatted": m.transcript_formatted,
-            "transcript_raw": m.transcript_raw,
-            "participants": m.participants,
-            "duration_minutes": m.duration_minutes,
-            "summary": None,
-        }
-        if m.summary:
-            s = m.summary
-            data["summary"] = {
-                "overview": s.overview,
-                "topics": s.topics,
-                "created_at": s.created_at.isoformat(),
-                "tasks": [{"description": t.description, "responsible": t.responsible,
-                           "deadline": t.deadline, "done": t.done} for t in s.tasks],
-                "decisions": [{"description": d.description, "context": d.context}
-                              for d in s.decisions],
-            }
-        return data
-
-    def _deserialize(self, data: dict) -> Meeting:
-        summary = None
-        if data.get("summary"):
-            s = data["summary"]
-            summary = Summary(
-                overview=s.get("overview", ""),
-                topics=s.get("topics", []),
-                created_at=datetime.fromisoformat(s.get("created_at", datetime.now().isoformat())),
-                tasks=[Task(t["description"], t.get("responsible", "Não definido"),
-                            t.get("deadline", None), t.get("done", False))
-                       for t in s.get("tasks", [])],
-                decisions=[Decision(d["description"], d.get("context", ""))
-                           for d in s.get("decisions", [])],
-            )
-        return Meeting(
-            id=data["id"],
-            title=data["title"],
-            started_at=datetime.fromisoformat(data["started_at"]),
-            audio_path=data.get("audio_path"),
-            transcript_text=data.get("transcript_text", ""),
-            transcript_formatted=data.get("transcript_formatted", ""),
-            transcript_raw=data.get("transcript_raw", ""),
-            participants=data.get("participants", []),
-            duration_minutes=data.get("duration_minutes", 0.0),
-            summary=summary,
-        )
+        (self._base / f"{meeting_id}.json").unlink(missing_ok=True)

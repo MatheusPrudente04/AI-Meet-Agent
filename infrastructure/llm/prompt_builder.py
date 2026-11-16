@@ -130,7 +130,7 @@ class PromptBuilder:
     """
     Constrói prompts de resumo otimizados por tipo de reunião.
     É uma classe pura — sem dependências externas, fácil de testar.
-    O LangChainLLMService recebe uma instância via injeção.
+    O MeetingAgent (meeting_agent.py) usa o prompt de resumo depois do contrato.
 
     
     """
@@ -156,9 +156,16 @@ Estrutura base (sempre inclua esses campos):
     {"description": "...", "responsible": "nome ou Não definido", "deadline": "prazo ou Não definido"}
   ],
   "decisions": [
-    {"description": "...", "context": "contexto breve"}
+    {"description": "...", "context": "contexto breve", "status": "aprovada|condicionada|proposta|pendente|rejeitada|inconclusiva"}
   ]
 }
+
+Regras de tarefas e decisões (contrato, §4 e §7):
+- "responsible" só recebe um nome quando a tarefa foi atribuída explicitamente a essa pessoa na reunião.
+  Quem apenas mencionou o assunto não é responsável. Sem atribuição explícita: "Não definido".
+- Toda proposta, sugestão ou assunto adiado entra em "decisions" com o status adequado
+  ("proposta", "pendente"...), nunca como "aprovada". Silêncio não é aprovação.
+- "status": "aprovada" exige manifestação clara de aprovação na transcrição.
 """
 
     BASE_CHAT = """Você é um assistente de reuniões. Você participou da reunião abaixo

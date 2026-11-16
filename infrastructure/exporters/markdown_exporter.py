@@ -17,16 +17,16 @@ class MarkdownExporter(IExporter):
 
     def __init__(self, output_dir: str = "data/exports") -> None:
         self._output_dir = Path(output_dir)
-        self._output_dir.mkdir(parents=True, exist_ok=True)
 
     def name(self) -> str:
         return "Markdown"
 
     def export(self, meeting: Meeting) -> str:
         try:
-            content = self._build_markdown(meeting)
+            content = self.render(meeting)
             safe_title = "".join(c for c in meeting.title if c.isalnum() or c in " -_").strip()
             filename = f"{safe_title}_{meeting.started_at.strftime('%Y%m%d_%H%M')}.md"
+            self._output_dir.mkdir(parents=True, exist_ok=True)
             path = self._output_dir / filename
 
             with open(path, "w", encoding="utf-8") as f:
@@ -37,10 +37,11 @@ class MarkdownExporter(IExporter):
         except Exception as e:
             raise ExportError(f"Markdown export falhou: {str(e)}") from e
 
-    def _build_markdown(self, meeting: Meeting) -> str:
+    def render(self, meeting: Meeting) -> str:
+        """Markdown da reunião, sem gravar arquivo (download pela interface e pela API)."""
         lines = []
         lines.append(f"# {meeting.title}")
-        lines.append(f"\n**Data:** {meeting.started_at.strftime('%-d de %B de %Y às %H:%M')}")
+        lines.append(f"\n**Data:** {meeting.started_at.strftime('%d/%m/%Y às %H:%M')}")
         lines.append(f"**Duração:** {meeting.duration_minutes:.0f} minutos")
 
         if meeting.participants:
@@ -66,7 +67,7 @@ class MarkdownExporter(IExporter):
             if s.decisions:
                 lines.append("\n## Decisões\n")
                 for dec in s.decisions:
-                    lines.append(f"- **{dec.description}**")
+                    lines.append(f"- **{dec.description}**" + (f" — _{dec.status}_" if dec.status else ""))
                     if dec.context:
                         lines.append(f"  > {dec.context}")
 

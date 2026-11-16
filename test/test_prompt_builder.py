@@ -118,72 +118,31 @@ class TestMeetingType:
         areas = MeetingType.RETROSPECTIVE.focus_areas
         assert any("melhor" in a.lower() or "ação" in a.lower() for a in areas)
 
-# Classe de teste para verificar a integração entre o PromptBuilder e o LangChainLLMService, garatindo que o tipo de reunião é corretamente passando para o builder 
-class TestIntegracaoLLMServiceComTipo:
-    """Testa que o LangChainLLMService usa o tipo de reunião corretamente."""
+# Integração do PromptBuilder com o agente (ADR-014): o tipo de reunião chega ao prompt do resumo.
+class TestIntegracaoAgenteComTipo:
+
+    @staticmethod
+    def _agent():
+        import json
+        from infrastructure.llm.meeting_agent import MeetingAgent
+
+        class Model:
+            calls = []
+            def complete(self, messages, as_json=False):
+                self.calls.append(messages)
+                return json.dumps({"overview": "ok", "topics": [], "tasks": [], "decisions": []})
+
+        model = Model()
+        return MeetingAgent(model=model, contract=""), model
 
     def test_summarize_passa_meeting_type_ao_builder(self):
-        import json
-        from unittest.mock import MagicMock
-        from infrastructure.llm.langchain_llm_service import LangChainLLMService
-
-        valid_json = json.dumps({
-            "overview": "Reunião de planejamento.",
-            "topics": ["Sprint goals"],
-            "tasks": [{"description": "Task A", "responsible": "Ana", "deadline": "Sexta"}],
-            "decisions": [],
-        })
-
-        mock_llm = MagicMock()
-        mock_llm.invoke.return_value.content = valid_json
-
-        service = LangChainLLMService(llm=mock_llm)
-        service.summarize("transcrição", MeetingType.PLANNING)
-
-        # Verifica que o system prompt contém instruções de planning
-        messages = mock_llm.invoke.call_args[0][0]
-        system_content = messages[0].content
+        agent, model = self._agent()
+        agent.summarize("transcrição", MeetingType.PLANNING)
+        system_content = model.calls[-1][0]["content"]
         assert "planning" in system_content.lower() or "planejamento" in system_content.lower()
 
     def test_general_e_planning_geram_system_prompts_diferentes(self):
-        import json
-        from unittest.mock import MagicMock
-        from infrastructure.llm.langchain_llm_service import LangChainLLMService
-
-        valid_json = json.dumps({
-            "overview": "ok", "topics": [], "tasks": [], "decisions": []
-        })
-        mock_llm = MagicMock()
-        mock_llm.invoke.return_value.content = valid_json
-        service = LangChainLLMService(llm=mock_llm)
-
-        service.summarize("transcrição", MeetingType.GENERAL)
-        general_prompt = mock_llm.invoke.call_args[0][0][0].content
-
-        service.summarize("transcrição", MeetingType.PLANNING)
-        planning_prompt = mock_llm.invoke.call_args[0][0][0].content
-
-        assert general_prompt != planning_prompt
-
-    def test_summarize_recovers_json_com_chave_final_ausente(self):
-        from unittest.mock import MagicMock
-        from infrastructure.llm.langchain_llm_service import LangChainLLMService
-
-        incomplete_json = '''{
-  "overview": "A reunião é sobre um teste",
-  "topics": ["teste"],
-  "tasks": [
-    {"description": "Realizar o teste", "responsible": "Boa, tite", "deadline": "Encerrando a reunião."}
-  ],
-  "decisions": []
-'''
-
-        mock_llm = MagicMock()
-        mock_llm.invoke.return_value.content = incomplete_json
-
-        service = LangChainLLMService(llm=mock_llm)
-        summary = service.summarize("transcrição", MeetingType.GENERAL)
-
-        assert summary.overview == "A reunião é sobre um teste"
-        assert len(summary.topics) == 1
-        assert summary.tasks[0].description == "Realizar o teste"
+        agent, model = self._agent()
+        agent.summarize("transcrição", MeetingType.GENERAL)
+        agent.summarize("transcrição", MeetingType.PLANNING)
+        assert model.calls[0][0]["content"] != model.calls[1][0]["content"]

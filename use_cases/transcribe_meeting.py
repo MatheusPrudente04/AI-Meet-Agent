@@ -1,7 +1,7 @@
 # Use case: orquestra transcrição de áudio com injeção de dependência
 from dataclasses import dataclass
 from domain.entities.transcript import Transcript
-from interface.transcriber import ITranscriber, TranscriptionError
+from domain.interfaces.transcriber import ITranscriber, TranscriptionError
 
 
 # Dados de entrada para o processo de transcrição

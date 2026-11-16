@@ -49,3 +49,25 @@ bot_chrome_profile/
 # ── Distribuição ──────────────────────────────────────────────────────────
 *.zip.env
 data/collab.db
+
+# nio (config local do usuário)
+nio.user.json
+.esteira/runs/
+.esteira/tmp/
+.esteira/hooks/
+.esteira/heals/
+.esteira/backups/
+
+# ── Dados e artefatos locais ──────────────────────────────────────────────
+data/
+security_config.json
+security_audits/
+.qodo/
+
+# ── Backups do banco ──────────────────────────────────────────────────────
+backups/
+
+# Google OAuth (Calendar): segredo do cliente e token de acesso nunca vão para o git
+credentials.json
+token.json
+*client_secret*.json

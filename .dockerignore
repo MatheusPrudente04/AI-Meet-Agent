@@ -40,3 +40,15 @@ bot_chrome_profile/
 .vscode/
 .idea/
 *.swp
+# Ambiente local e artefatos
+venv/
+.venv/
+.esteira/
+docs/
+test/
+backups
+
+# Google OAuth: entra no container pelo volume ./data/google, nunca pela imagem
+credentials.json
+token.json
+*client_secret*.json

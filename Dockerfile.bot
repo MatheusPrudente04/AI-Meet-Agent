@@ -1,0 +1,38 @@
+# Bot de gravação em container (S10-1, ADR-016): Chromium do Playwright com tela virtual
+# (Xvfb), som virtual (PulseAudio, para a aba ter onde tocar) e noVNC para o login da conta
+# do bot pelo navegador, uma vez: http://localhost:6080/vnc.html
+#
+# As primeiras camadas são idênticas às do Dockerfile principal: o pip install vem do cache.
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /app
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Navegador na mesma versão do Playwright travado; --with-deps traz as bibliotecas do sistema.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends xvfb x11-utils x11vnc novnc websockify pulseaudio \
+ && playwright install --with-deps chromium \
+ && find /var/lib/apt/lists -mindepth 1 -delete   # cache do apt fora da imagem
+
+# Usuário comum: o PulseAudio não roda como root, e o Chromium fica com sandbox de usuário.
+RUN useradd --create-home --uid 1000 bot \
+ && mkdir -p /home/bot/profile /app/data/audio /tmp/.X11-unix \
+ && chmod 1777 /tmp/.X11-unix \
+ && chown -R bot:bot /home/bot /app
+
+COPY --chown=bot:bot . .
+USER bot
+
+ENV DISPLAY=:99 \
+    BOT_CHROME_PROFILE=/home/bot/profile \
+    BOT_HEADLESS=false
+
+EXPOSE 6080
+ENTRYPOINT ["bash", "infrastructure/recorder/container/entrypoint.sh"]
+CMD ["python", "main.py", "--bot-worker"]

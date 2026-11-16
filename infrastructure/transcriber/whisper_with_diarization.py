@@ -17,7 +17,7 @@ quando USE_REAL_DIARIZATION=true no .env.
 from __future__ import annotations
 
 from domain.entities.transcript import Transcript, Segment
-from interface.transcriber import ITranscriber, TranscriptionError
+from domain.interfaces.transcriber import ITranscriber, TranscriptionError
 from infrastructure.transcriber.pyannote_diarizer import (
     PyannoteDiarizer,
     DiarizationSegment,
@@ -162,7 +162,7 @@ class WhisperWithDiarization(ITranscriber):
         if not overlap_by_speaker:
             return "SPEAKER_00"
 
-        return max(overlap_by_speaker, key=overlap_by_speaker.get)
+        return max(overlap_by_speaker, key=lambda k: overlap_by_speaker.get(k, 0.0))
 
     @staticmethod
     def _build_diarizer() -> PyannoteDiarizer:
@@ -176,7 +176,7 @@ class WhisperWithDiarization(ITranscriber):
             Instância configurada de PyannoteDiarizer
         """
         settings = get_settings()
-        hf_token = getattr(settings, "huggingface_token", "")
+        hf_token = settings.huggingface_token
 
         if not hf_token:
             raise TranscriptionError(
@@ -186,5 +186,5 @@ class WhisperWithDiarization(ITranscriber):
 
         return PyannoteDiarizer(
             hf_token=hf_token,
-            device=getattr(settings, "diarization_device", "cpu"),
+            device=settings.diarization_device,
         )

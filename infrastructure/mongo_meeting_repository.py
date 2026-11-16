@@ -1,172 +1,54 @@
-import logging
-from datetime import datetime
 from typing import Optional
 
-from domain.entities.meeting import Meeting, Summary, Task, Decision
-from domain.entities.speech_block import SpeechBlock
-from repositories.meeting_repository import IMeetingRepository
-from infrastructure.mongo_documents import (
-    MeetingDocument,
-    SummaryDocument,
-    TaskDocument,
-    DecisionDocument,
-    SpeechBlockDocument,
-)
-from infrastructure.mongo_setup import _get_loop
+from pymongo import MongoClient
 
-logger = logging.getLogger(__name__)
+from domain.entities.meeting import Meeting
+from domain.interfaces.meeting_repository import IMeetingRepository
+from infrastructure.meeting_serialization import meeting_from_dict, meeting_to_dict
 
 
 class MongoMeetingRepository(IMeetingRepository):
-    def _sync(self, coro):
-        return _get_loop().run_until_complete(coro)
+    """Persistência em MongoDB (PyMongo síncrono) — modo collab. Ver ADR-003."""
 
-    # ── IMeetingRepository ──────────────────────────────────────────────
+    def __init__(self, mongo_uri: str, db_name: str) -> None:
+        client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+        self._col = client[db_name]["meetings"]
+        self._indexed = False
 
     def save(self, meeting: Meeting) -> None:
-        self._sync(self._save(meeting))
+        if not self._indexed:  # na primeira escrita: a aplicação sobe mesmo com o banco fora
+            self._col.create_index([("owner_id", 1), ("started_at", -1)])
+            self._col.create_index("meeting_url")
+            self._col.create_index("source_id")
+            # Posição na fila (ADR-015): consultada a cada atualização de status; só as que esperam.
+            self._col.create_index("queue", partialFilterExpression={"queue": {"$gt": ""}})
+            self._indexed = True
+        doc = meeting_to_dict(meeting)
+        doc.pop("id")
+        doc.pop("chat_history")  # só o chat escreve a conversa (append_chat / set_chat_history)
+        self._col.update_one({"_id": meeting.id}, {"$set": doc}, upsert=True)
+
+    def append_chat(self, meeting_id: str, messages: list[dict]) -> None:
+        self._col.update_one({"_id": meeting_id}, {"$push": {"chat_history": {"$each": messages}}})
+
+    def set_chat_history(self, meeting_id: str, chat_history: list[dict]) -> None:
+        self._col.update_one({"_id": meeting_id}, {"$set": {"chat_history": chat_history}})
 
     def find_by_id(self, meeting_id: str) -> Optional[Meeting]:
-        return self._sync(self._find_by_id(meeting_id))
+        doc = self._col.find_one({"_id": meeting_id})
+        return meeting_from_dict(doc) if doc else None
 
-    def list_all(self) -> list[Meeting]:
-        return self._sync(self._list_all())
+    def list_all(self, owner_id: Optional[str] = None) -> list[Meeting]:
+        # ponytail: carrega as transcrições inteiras; usar projeção quando a lista ficar lenta
+        # "" também casa com documentos antigos, que não têm o campo.
+        query = {} if owner_id is None else {"owner_id": owner_id or {"$in": ["", None]}}
+        return [meeting_from_dict(d) for d in self._col.find(query).sort("started_at", -1)]
+
+    def count_by_status(self) -> dict[str, int]:
+        return {d["_id"] or "pending": d["n"] for d in self._col.aggregate([{"$group": {"_id": "$status", "n": {"$sum": 1}}}])}
+
+    def find_by(self, **fields) -> list[Meeting]:
+        return [meeting_from_dict(d) for d in self._col.find(fields)]
 
     def delete(self, meeting_id: str) -> None:
-        self._sync(self._delete(meeting_id))
-
-    # ── Async internals ─────────────────────────────────────────────────
-
-    async def _save(self, meeting: Meeting) -> None:
-        doc = await MeetingDocument.find_one({"_id": meeting.id})
-        if doc:
-            doc.title = meeting.title
-            doc.started_at = meeting.started_at
-            doc.audio_path = meeting.audio_path
-            doc.transcript_text = meeting.transcript_text
-            doc.transcript_formatted = meeting.transcript_formatted
-            doc.participants = meeting.participants
-            doc.participant_info = meeting.participant_info
-            doc.duration_minutes = meeting.duration_minutes
-            doc.summary = self._summary_to_doc(meeting.summary) if meeting.summary else None
-            doc.speech_blocks = self._blocks_to_docs(meeting.speech_blocks)
-            doc.speaker_observations = meeting.speaker_observations
-            doc.updated_at = datetime.now()
-            doc.status = "done" if meeting.is_summarized else "transcribing" if meeting.is_transcribed else "pending"
-            await doc.save()
-        else:
-            doc = MeetingDocument(
-                id=meeting.id,
-                title=meeting.title,
-                started_at=meeting.started_at,
-                audio_path=meeting.audio_path,
-                transcript_text=meeting.transcript_text,
-                transcript_formatted=meeting.transcript_formatted,
-                participants=meeting.participants,
-                participant_info=meeting.participant_info,
-                duration_minutes=meeting.duration_minutes,
-                summary=self._summary_to_doc(meeting.summary) if meeting.summary else None,
-                speech_blocks=self._blocks_to_docs(meeting.speech_blocks),
-                speaker_observations=meeting.speaker_observations,
-                status="done" if meeting.is_summarized else "transcribing" if meeting.is_transcribed else "pending",
-            )
-            await doc.insert()
-
-    async def _find_by_id(self, meeting_id: str) -> Optional[Meeting]:
-        doc = await MeetingDocument.find_one({"_id": meeting_id})
-        if doc is None:
-            return None
-        return self._doc_to_meeting(doc)
-
-    async def _list_all(self) -> list[Meeting]:
-        docs = await MeetingDocument.find_all().sort(-MeetingDocument.started_at).to_list()
-        return [self._doc_to_meeting(d) for d in docs]
-
-    async def _delete(self, meeting_id: str) -> None:
-        doc = await MeetingDocument.find_one({"_id": meeting_id})
-        if doc:
-            await doc.delete()
-
-    # ── Status helpers ──────────────────────────────────────────────────
-
-    async def update_status(self, meeting_id: str, status: str) -> None:
-        doc = await MeetingDocument.find_one({"_id": meeting_id})
-        if doc:
-            doc.status = status
-            doc.updated_at = datetime.now()
-            await doc.save()
-
-    async def get_status(self, meeting_id: str) -> Optional[str]:
-        doc = await MeetingDocument.find_one({"_id": meeting_id})
-        if doc:
-            return doc.status
-        return None
-
-    # ── Conversion helpers ──────────────────────────────────────────────
-
-    def _summary_to_doc(self, summary: Summary) -> SummaryDocument:
-        return SummaryDocument(
-            overview=summary.overview,
-            topics=summary.topics,
-            tasks=[TaskDocument(
-                description=t.description,
-                responsible=t.responsible,
-                deadline=t.deadline,
-                done=t.done,
-            ) for t in summary.tasks],
-            decisions=[DecisionDocument(
-                description=d.description,
-                context=d.context,
-            ) for d in summary.decisions],
-            created_at=summary.created_at,
-        )
-
-    def _doc_to_meeting(self, doc: MeetingDocument) -> Meeting:
-        summary = None
-        if doc.summary:
-            s = doc.summary
-            summary = Summary(
-                overview=s.overview,
-                topics=s.topics or [],
-                created_at=s.created_at or datetime.now(),
-                tasks=[Task(
-                    description=t.description,
-                    responsible=t.responsible,
-                    deadline=t.deadline,
-                    done=t.done,
-                ) for t in (s.tasks or [])],
-                decisions=[Decision(
-                    description=d.description,
-                    context=d.context,
-                ) for d in (s.decisions or [])],
-            )
-        return Meeting(
-            id=doc.id,
-            title=doc.title,
-            started_at=doc.started_at,
-            audio_path=doc.audio_path,
-            transcript_text=doc.transcript_text or "",
-            transcript_formatted=doc.transcript_formatted or "",
-            participants=doc.participants or [],
-            participant_info=doc.participant_info or {},
-            duration_minutes=doc.duration_minutes or 0.0,
-            summary=summary,
-            speech_blocks=[
-                SpeechBlock(b.user_id, b.text, b.start, b.end, b.sentiment, b.energy)
-                for b in (doc.speech_blocks or [])
-            ],
-            speaker_observations=doc.speaker_observations or [],
-        )
-
-    def _blocks_to_docs(self, blocks: list[SpeechBlock]) -> list[SpeechBlockDocument]:
-        return [
-            SpeechBlockDocument(
-                user_id=b.user_id,
-                text=b.text,
-                start=b.start,
-                end=b.end,
-                sentiment=b.sentiment,
-                energy=b.energy,
-            )
-            for b in blocks
-        ]
+        self._col.delete_one({"_id": meeting_id})
