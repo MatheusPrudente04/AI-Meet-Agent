@@ -102,6 +102,9 @@ class Meeting:
     duration_minutes: float = 0.0
     transcript_raw: str = ""
     status: MeetingStatus = MeetingStatus.PENDING
+    # Quando o status atual começou (para a tela mostrar há quanto tempo a etapa roda e perceber
+    # trava). Preenchido sozinho na criação e a cada troca de status (__setattr__).
+    status_at: Optional[datetime] = None
     error: str = ""
     # Conversa do chat sobre esta reunião: [{"role": "user"|"assistant", "content": str}]
     chat_history: list[dict] = field(default_factory=list)
@@ -112,6 +115,15 @@ class Meeting:
     queue: str = ""
     queue_priority: int = 0
     queued_at: Optional[datetime] = None
+
+    def __post_init__(self):
+        if self.status_at is None:  # reunião nova (ou documento antigo sem o campo): conta de agora
+            object.__setattr__(self, "status_at", datetime.now())
+
+    def __setattr__(self, name, value):
+        if name == "status" and getattr(self, "status", None) != value:
+            object.__setattr__(self, "status_at", datetime.now())
+        object.__setattr__(self, name, value)
 
     @property
     def participants_header(self) -> str:

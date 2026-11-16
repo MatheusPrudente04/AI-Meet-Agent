@@ -24,8 +24,15 @@ class MongoMeetingRepository(IMeetingRepository):
             self._col.create_index("queue", partialFilterExpression={"queue": {"$gt": ""}})
             self._indexed = True
         doc = meeting_to_dict(meeting)
-        doc["_id"] = doc.pop("id")
-        self._col.replace_one({"_id": meeting.id}, doc, upsert=True)
+        doc.pop("id")
+        doc.pop("chat_history")  # só o chat escreve a conversa (append_chat / set_chat_history)
+        self._col.update_one({"_id": meeting.id}, {"$set": doc}, upsert=True)
+
+    def append_chat(self, meeting_id: str, messages: list[dict]) -> None:
+        self._col.update_one({"_id": meeting_id}, {"$push": {"chat_history": {"$each": messages}}})
+
+    def set_chat_history(self, meeting_id: str, chat_history: list[dict]) -> None:
+        self._col.update_one({"_id": meeting_id}, {"$set": {"chat_history": chat_history}})
 
     def find_by_id(self, meeting_id: str) -> Optional[Meeting]:
         doc = self._col.find_one({"_id": meeting_id})

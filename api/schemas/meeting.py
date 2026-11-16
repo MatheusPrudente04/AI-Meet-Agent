@@ -61,6 +61,10 @@ class MeetingStatusResponse(BaseModel):
     summary: Optional[SummarySchema] = Field(None, description="Ausente na listagem e enquanto não houver resumo")
     queue_position: int = Field(0, description="Só em GET /meetings/{id}/status: posição na fila da etapa atual "
                                                "(1 = é a próxima; 0 = não está esperando)")
+    stage_elapsed_s: Optional[float] = Field(None, description="Só em /status: segundos desde que a etapa atual começou")
+    stage_typical_s: Optional[float] = Field(None, description="Só em /status: quanto essa etapa costuma levar (mediana)")
+    stalled: bool = Field(False, description="Só em /status: a etapa parou (nenhum worker com a reunião, fora da fila); "
+                                             "retome com POST /meetings/{id}/resume")
 
 
 class MeetingDetailResponse(MeetingStatusResponse):

@@ -145,3 +145,28 @@ def test_numeros_da_reuniao_vao_no_contexto():
     block = _stats_block(m)
     assert "Ana 2, Bruno 1" in block and "Carla 1" in block and "aprovada 1" in block
     assert "aprovada 1" in _stats_block(Meeting(id="y", title="t", summary=Summary(decisions=[Decision("d", status="aprovada")])))
+
+
+def test_resumo_e_conversa_nao_se_apagam(env):
+    """Regressão (2026-11-15): pergunta feita durante o resumo. A resposta do chat gravava a reunião
+    inteira com a cópia antiga e apagava o resumo; o resumo gravado depois apagava a conversa."""
+    from domain.entities.meeting import Summary
+    repo = env.repo
+    stale = repo.find_by_id("m1")              # o chat carregou a reunião antes do resumo sair
+    stale.status = MeetingStatus.SUMMARIZING
+    stale.summary = None
+    worker_copy = repo.find_by_id("m1")         # o worker do resumo tem a sua cópia
+    worker_copy.summary, worker_copy.status = Summary(overview="resumo novo"), MeetingStatus.DONE
+    repo.save(worker_copy)                      # resumo terminou
+
+    class LLM:
+        def chat(self, *a, **k):
+            return "resposta"
+    ChatWithMeetingUC(LLM(), repository=repo).execute(ChatWithMeetingInput(meeting=stale, question="e aí?"))
+    m = repo.find_by_id("m1")
+    assert m.summary.overview == "resumo novo" and m.status is MeetingStatus.DONE  # o chat não apagou
+    assert [x["content"] for x in m.chat_history] == ["e aí?", "resposta"]
+
+    worker_copy.error = "nada"                  # nova gravação do pipeline com cópia sem a conversa
+    repo.save(worker_copy)
+    assert len(repo.find_by_id("m1").chat_history) == 2  # o pipeline não apagou a conversa

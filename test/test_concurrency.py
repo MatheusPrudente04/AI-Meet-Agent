@@ -240,3 +240,65 @@ def test_alerta_so_na_mudanca_de_estado(tmp_path, monkeypatch):
     send = lambda subject, body: sent.append(subject)
     assert [alert.run("u", state, send) for _ in range(4)] == [False, False, True, True]
     assert sent == ["API fora do ar", "API de volta"]
+
+
+# ── Progresso e trava (etapa sem worker) ─────────────────────────────
+
+def test_status_at_acompanha_cada_troca_de_status():
+    from datetime import datetime, timedelta
+    m = Meeting(id="m", title="t")
+    first = m.status_at
+    m.status = MeetingStatus.TRANSCRIBING
+    assert m.status_at and m.status_at >= first
+    old = datetime.now() - timedelta(minutes=5)
+    m.status_at = old
+    m.status = MeetingStatus.TRANSCRIBING   # mesmo status: não reinicia o relógio
+    assert m.status_at == old
+
+
+def _progress_box(repo, monkeypatch, alive):
+    import infrastructure.observability as obs
+    monkeypatch.setattr(obs, "workers", lambda: alive)
+    monkeypatch.setattr(obs, "samples", lambda: {"pipeline_stage_seconds|stage=transcribe": [100.0, 120.0, 140.0]})
+
+    class Box:
+        progress = Container.progress
+        resume = Container.resume
+        enqueue_processing = Container.enqueue_processing
+        enqueue = Container.enqueue
+        _priority = Container._priority
+        _is_collab = True
+        def __init__(self): self.repository, self.sent = repo, []
+    return Box()
+
+
+def test_trava_so_quando_ninguem_processa_nem_espera(repo, monkeypatch):
+    from datetime import datetime, timedelta
+    m = Meeting(id="m", title="t", status=MeetingStatus.TRANSCRIBING, audio_path="")
+    m.status_at = datetime.now() - timedelta(minutes=10)
+    repo.save(m)
+    working = {"transcribe": [{"host": "w", "task": {"name": "process_meeting", "meeting_id": "m"}}]}
+    assert _progress_box(repo, monkeypatch, working).progress(m)["state"] == "working"
+    p = _progress_box(repo, monkeypatch, {"transcribe": [{"host": "w", "task": None}]}).progress(m)
+    assert p["state"] == "stalled" and p["elapsed_s"] > 500 and p["typical_s"] == 120.0
+    m.queue = "transcribe"
+    assert _progress_box(repo, monkeypatch, {}).progress(m)["state"] == "queued"
+    m.queue, m.status_at = "", datetime.now()
+    assert _progress_box(repo, monkeypatch, {}).progress(m)["state"] == "working"  # acabou de começar
+
+
+def test_retomar_recomeca_a_etapa_em_que_parou(repo, monkeypatch, tmp_path):
+    import worker.tasks as tasks
+    box = _progress_box(repo, monkeypatch, {})
+    sent = []
+    monkeypatch.setattr(tasks.process_meeting_task, "apply_async", lambda args, priority: sent.append(("transcribe", args[0])))
+    monkeypatch.setattr(tasks.summarize_meeting_task, "apply_async", lambda args, priority: sent.append(("llm", args[0])))
+    audio = tmp_path / "a.webm"
+    audio.write_bytes(b"x")
+    repo.save(Meeting(id="t", title="t", status=MeetingStatus.TRANSCRIBING, audio_path=str(audio)))
+    repo.save(Meeting(id="s", title="t", status=MeetingStatus.SUMMARIZING, transcript_text="oi"))
+    repo.save(Meeting(id="r", title="t", status=MeetingStatus.RECORDING, audio_path=str(tmp_path / "nada.webm")))
+    for mid in ("t", "s", "r"):
+        box.resume(repo.find_by_id(mid))
+    assert sent == [("transcribe", "t"), ("llm", "s")]
+    assert repo.find_by_id("r").status is MeetingStatus.ERROR  # bot morreu sem áudio: erro claro

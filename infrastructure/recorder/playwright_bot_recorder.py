@@ -110,7 +110,9 @@ SPEAKERS_JS = """
     const participants = [];
     const selfNames = [];
     for (const tile of document.querySelectorAll('[data-participant-id]')) {
-        const lines = (tile.innerText || '').split('\\n').map(l => l.trim()).filter(Boolean);
+        // Linhas que são controles do Meet (zoom, fixar, apresentação…) nunca são nome (ver speaker_events.UI_LABEL).
+        const lines = (tile.innerText || '').split('\\n').map(l => l.trim()).filter(Boolean)
+            .filter(l => !/zoom|apresenta|presentation|tela principal|main screen|fixar|liberar|\\bpin\\b|unpin|mais opç|more options/i.test(l));
         const name = lines.find((l, i) => lines.indexOf(l) !== i) || lines.find(l => !/^[a-z0-9_]+$/.test(l));
         if (!name) continue;
         if (!participants.includes(name)) participants.push(name);

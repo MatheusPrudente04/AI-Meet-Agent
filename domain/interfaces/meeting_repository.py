@@ -43,3 +43,12 @@ class IMeetingRepository(ABC):
         for m in self.list_all():
             counts[m.status.value] = counts.get(m.status.value, 0) + 1
         return counts
+
+    # A conversa tem dono próprio: só o chat escreve nela, e só ela. `save` não toca em
+    # chat_history (preserva o que está gravado). Com save do documento inteiro, a resposta do
+    # chat gravada depois do resumo apagava o resumo (e o resumo apagava perguntas), 2026-11-15.
+    def append_chat(self, meeting_id: str, messages: list[dict]) -> None:
+        raise NotImplementedError
+
+    def set_chat_history(self, meeting_id: str, chat_history: list[dict]) -> None:
+        raise NotImplementedError

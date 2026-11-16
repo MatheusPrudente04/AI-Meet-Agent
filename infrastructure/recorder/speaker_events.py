@@ -8,6 +8,7 @@ Uma linha por evento, com relógio do navegador do bot (epoch em ms):
   {"ts": ..., "type": "captions", "on": true}                 diagnóstico: legendas ligadas?
 """
 import json
+import re
 import logging
 from pathlib import Path
 
@@ -56,7 +57,22 @@ def load_speaker_events(audio_path: str, exclude: tuple[str, ...] = ()) -> Speak
             if name and name.casefold() not in hidden and t >= 0:
                 events.speaking.append((t, name))
 
-    events.participants = list(seen)
+    events.participants = real_names(list(seen))
     if start_ts is None and raw:
         logger.warning("%s sem evento 'start': presença registrada, falas não atribuídas", path.name)
     return events
+
+
+# Controles do Meet que aparecem dentro do bloco de vídeo, sobretudo quando alguém apresenta a
+# tela ("Aumentar zoom", "Liberar a apresentação de X da tela principal"). O bot os lia como
+# nomes: a reunião "Teste 004" (2026-11-15) saiu com 4 participantes, eram 2.
+UI_LABEL = re.compile(
+    r"\b(zoom|apresenta|presentation|present(ing)?\b|tela principal|main screen|fixar|desafixar|liberar|"
+    r"\bpin\b|unpin|mais opç|more options|silenciar|ativar som|mute|unmute|remover|remove|"
+    r"planos de fundo|backgrounds?|efeitos|effects|legenda|caption)", re.IGNORECASE)
+
+
+def real_names(names: list[str]) -> list[str]:
+    """Tira da lista o que é rótulo de botão do Meet. Não descarta nome que contém outro nome:
+    "Ana" e "Ana Souza" podem ser duas pessoas."""
+    return [n for n in names if not UI_LABEL.search(n)]

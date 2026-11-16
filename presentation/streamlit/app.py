@@ -307,7 +307,24 @@ def watch_progress(meeting_id: str, shown_status: MeetingStatus) -> None:
     if current.status != shown_status:
         st.session_state.meeting = current
         st.rerun()
-    st.info(f"{_STATUS_ICON[current.status]} {_progress_label(current)}…")
+    prog = container.progress(current)
+    if prog["state"] == "stalled":
+        st.warning(f"⚠️ {_STATUS_LABEL.get(current.status, current.status.value)} parou: nenhum worker está "
+                   f"processando esta reunião há {_duration(prog['elapsed_s'])}. Provavelmente um serviço "
+                   "reiniciou no meio. Dá para retomar de onde parou.")
+        if st.button("🔁 Retomar", key=f"resume_{current.id}", type="primary"):
+            container.resume(current)
+            st.rerun()
+        return
+    extra = f" · há {_duration(prog['elapsed_s'])}" if prog["elapsed_s"] is not None else ""
+    if prog["typical_s"]:
+        extra += f" · costuma levar ~{_duration(prog['typical_s'])}"
+    st.info(f"{_STATUS_ICON[current.status]} {_progress_label(current)}…{extra}")
+
+
+def _duration(seconds) -> str:
+    seconds = int(seconds or 0)
+    return f"{seconds // 60} min {seconds % 60:02d} s" if seconds >= 60 else f"{seconds} s"
 
 
 @st.fragment(run_every="5s")

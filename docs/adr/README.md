@@ -28,6 +28,7 @@ Uma ADR só vira código depois de aceita. Ao aceitar, troque o status e a data 
 | 018 | Credenciamento do bot pela interface | Implementada em 2026-11-15 | — | Sim |
 | 019 | Observabilidade centralizada (métricas, logs, batimento dos workers) | Implementada em 2026-11-15 | — | Sim |
 | 020 | Memória entre reuniões (§14 do contrato) | Implementada em 2026-11-15 | — | Sim |
+| 021 | Latência do LLM: janela fixa e o que mais pesa | Janela fixa implementada; resto proposto | — | Sim |
 
 ### Desvios na implementação da Sprint 1
 
@@ -290,6 +291,12 @@ Detalhamento da fase 2:
 
 Alternativa descartada na fase 2: detectar o falante pela animação de áudio dos blocos de vídeo.
 Depende de classes CSS ofuscadas, mais instáveis que a região de legendas.
+
+**Correção (2026-11-16).** Com alguém apresentando a tela, o bloco de vídeo da apresentação traz
+botões ("Aumentar zoom", "Liberar a apresentação de X da tela principal") que o bot lia como nomes:
+a reunião "Teste 004" saiu com 4 participantes, eram 2. Filtro de rótulos de controle no
+navegador e na leitura dos eventos (`speaker_events.real_names`), que vale também para gravações
+antigas. Nome que contém outro nome não é descartado: "Ana" e "Ana Souza" podem ser duas pessoas.
 
 **Como ficou (2026-11-15).** A leitura é feita pelo recorder (Playwright consulta a página a cada
 segundo), não pela extensão. O que as reuniões reais ensinaram:
@@ -813,3 +820,57 @@ certo nas duas rodadas, com datas. Nota guardada e respeitada numa ata de outra 
 certo para aquela reunião mas não cita a revisão posterior que está no contexto.
 
 **Reverte-se assim.** Passar `memory_store=None` ao `ChatWithMeetingUC`.
+
+
+---
+
+## ADR-021 — Latência do LLM: janela fixa e o que mais pesa
+
+**Status.** Janela fixa e `keep_alive` implementados em 2026-11-15. Demais itens propostos.
+
+**Medido (Apple M4, 16 GB, `qwen2.5:7b` no Ollama, prompt real do chat).**
+
+| Situação | Tempo |
+|---|---|
+| Pergunta com o prompt no cache do Ollama | 1,6 a 2,9 s (geração ~20 tokens/s) |
+| Primeira leitura do prompt (~7.000 tokens) | 7,5 s |
+| Pedido com janela (`num_ctx`) diferente do anterior | **47 a 52 s**: o Ollama recarrega o modelo e perde o cache |
+| 6 perguntas alternando reunião curta e longa, janela por tamanho (como era) | 455 s |
+| As mesmas 6, janela fixa de 32k | 232 s |
+
+Observabilidade em produção local: chat com ferramentas p50 61 s, p95 120 s.
+
+**Causas, em ordem de peso.**
+1. **Janela variável** (4k/8k/16k/32k pelo tamanho do pedido): reunião curta usava 16k, a partir de
+   ~1 h 32k; alternar recarregava o modelo. **Corrigido**: janela fixa `OLLAMA_NUM_CTX_MAX` (32k)
+   e `OLLAMA_KEEP_ALIVE` (30 min). Custo: o modelo ocupa 8,2 GB em vez de 6,3 GB também nas
+   reuniões curtas (o pico já era esse nas longas).
+2. **Memória da máquina**: 13 GB de swap em uso de 14 GB, 17% de memória livre (Ollama 8,2 GB +
+   VM do Docker até 7,7 GB, com o Whisper `medium` usando 2,9 GB). Com o modelo em swap, ler um
+   prompt de 11.600 tokens levou 60 s (~190 tokens/s, contra ~1.300 tokens/s sem pressão).
+3. **Tamanho do contrato**: ~8.600 tokens, 60 a 75% de todo prompt, em toda chamada. Com cache é
+   barato; sem cache (troca de reunião, resumo rodando ao mesmo tempo, modelo recarregado) é o
+   grosso da leitura.
+
+**Achado junto: corrida entre chat e resumo (corrigida).** Pergunta feita enquanto o resumo era
+gerado: o chat gravava a reunião inteira com a cópia de quando a pergunta começou e apagava o
+resumo que tinha acabado de sair (a reunião "Teste 004" ficou em `summarizing`, sem resumo, com 8
+mensagens; resumo refeito). O inverso também apagava perguntas. Agora a conversa só é escrita
+campo a campo pelo chat (`append_chat`/`set_chat_history`, `$push` no Mongo) e `save` nunca toca
+nela. Teste de regressão em `test_chat_actions.py`. Chat e resumo ao mesmo tempo também disputam
+o mesmo modelo no Ollama: parte da demora sentida no chat vinha daí.
+
+**Propostas, ainda não aplicadas.**
+- **Ollama com `OLLAMA_FLASH_ATTENTION=1` e `OLLAMA_KV_CACHE_TYPE=q8_0`**: metade da memória do
+  contexto (~0,9 GB a menos em 32k) e leitura de prompt longo mais rápida. Configuração do serviço
+  Ollama na máquina; reiniciá-lo é decisão do dono.
+- **Menos memória no Docker**: Whisper `small` em vez de `medium` (~1 GB em vez de 2,9 GB, mais
+  rápido, um pouco menos preciso) ou limite menor para a VM.
+- **Contrato compacto para o chat** (mesmas regras em ~5 mil caracteres, o completo continua no
+  resumo): exige aprovação do dono do contrato e repetir `scripts/eval_agent` (8/8).
+- **Resposta em streaming**: as primeiras palavras em segundos, em vez de esperar a resposta toda.
+- **Produção**: servidor com 32 GB ou GPU, ou LLM por API; a 1.0 não deveria rodar com 16 GB
+  dividindo Whisper, Docker e Ollama.
+
+**Reverte-se assim.** `OLLAMA_NUM_CTX_MAX` menor (ex.: 16384) diminui a memória, mas reuniões
+longas passam a dar erro de contexto excedido.

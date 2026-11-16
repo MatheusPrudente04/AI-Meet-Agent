@@ -212,3 +212,17 @@ def test_fumaca_acusa_o_que_faltou(tmp_path):
         '{"type": "captions", "on": true}\n{"type": "participants", "names": ["Ana"]}\n', encoding="utf-8"
     )
     assert [ok for _, ok in smoke_checks(audio)] == [True, True, True, False]
+
+
+def test_botoes_do_meet_nao_viram_participantes(tmp_path):
+    """Regressão (Teste 004, 2026-11-15): com tela apresentada, rótulos de botão viraram "participantes"."""
+    from infrastructure.recorder.speaker_events import load_speaker_events, real_names
+    audio = tmp_path / "m.webm"
+    (tmp_path / "m.speakers.jsonl").write_text(
+        '{"ts": 1000, "type": "start"}\n{"ts": 1000, "type": "self", "name": "bot meet"}\n'
+        '{"ts": 1100, "type": "participants", "names": ["Aumentar zoom", "Hugo dos Reis", "Matheus Silva", "bot meet"]}\n'
+        '{"ts": 1200, "type": "participants", "names": ["Liberar a apresentação de Hugo dos Reis da tela principal", '
+        '"Hugo dos Reis", "Matheus Silva", "bot meet"]}\n', encoding="utf-8")
+    assert load_speaker_events(str(audio)).participants == ["Hugo dos Reis", "Matheus Silva"]
+    # nome que contém outro nome é outra pessoa, não botão
+    assert real_names(["Ana", "Ana Souza", "Fixar Ana", "Mais opções"]) == ["Ana", "Ana Souza"]

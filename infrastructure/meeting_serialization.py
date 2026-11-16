@@ -58,6 +58,7 @@ def meeting_from_dict(data: dict) -> Meeting:
         participants=data.get("participants") or [],
         duration_minutes=data.get("duration_minutes") or 0.0,
         status=_status(data, summary is not None),
+        status_at=_to_datetime(data["status_at"]) if data.get("status_at") else None,
         error=data.get("error") or "",
         chat_history=data.get("chat_history") or [],
         metrics=data.get("metrics") or {},

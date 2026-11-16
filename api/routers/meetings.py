@@ -150,8 +150,25 @@ def get_status(meeting_id: str, principal: Principal = Depends(current_principal
     """Leve, para consultar a cada poucos segundos enquanto status não for `done` ou `error`."""
     meeting = _meeting(meeting_id, principal)
     response = _to_response(meeting, with_summary=True)
-    response.queue_position = get_container().queue_position(meeting)
+    container = get_container()
+    response.queue_position = container.queue_position(meeting)
+    prog = container.progress(meeting)
+    response.stage_elapsed_s, response.stage_typical_s = prog["elapsed_s"], prog["typical_s"]
+    response.stalled = prog["state"] == "stalled"
     return response
+
+
+@router.post("/{meeting_id}/resume", response_model=UploadResponse, summary="Retoma uma reunião travada",
+             responses={**_NOT_FOUND, 409: {"description": "A reunião não está parada numa etapa"}})
+def resume(meeting_id: str, principal: Principal = Depends(current_principal)):
+    """Para quando /status vier com `stalled: true` (um worker morreu no meio): recomeça a etapa
+    em que parou. Seguro de repetir: as etapas são idempotentes."""
+    meeting = _meeting(meeting_id, principal)
+    try:
+        get_container().resume(meeting)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+    return UploadResponse(meeting_id=meeting_id, status=meeting.status, message="Retomada.")
 
 
 class TaskDoneRequest(BaseModel):

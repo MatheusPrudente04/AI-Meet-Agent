@@ -88,8 +88,11 @@ class ChatWithMeetingUC:
 
         if self._repo:
             reply_msg = {"role": "assistant", "content": answer, **({"action": action} if action else {})}
-            meeting.chat_history = [*meeting.chat_history, {"role": "user", "content": input_data.question}, reply_msg]
-            self._repo.save(meeting)
+            new = [{"role": "user", "content": input_data.question}, reply_msg]
+            meeting.chat_history = [*meeting.chat_history, *new]
+            # Só a conversa: gravar a reunião inteira devolvia o status e o resumo de quando a
+            # pergunta começou, apagando o resumo que terminou enquanto o modelo respondia.
+            self._repo.append_chat(meeting.id, new)
         return ChatWithMeetingOutput(answer=answer, success=True, action=action)
 
     def _prepare_action(self, meeting: Meeting, tool: dict, user_texts: list[str]) -> tuple[str, Optional[dict]]:

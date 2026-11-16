@@ -275,6 +275,14 @@ Objetivo: subir o sistema completo numa máquina Windows só com Docker Desktop,
 
 Saída: Windows 11 com Docker Desktop, do clone à reunião resumida, sem passo fora do README.
 
+## Versão 1.0.0 — fechada em 2026-11-16 (produção local)
+
+Notas em `CHANGELOG.md`. Fecha as Sprints 0 a 10 (com as pendências de validação real anotadas
+em cada uma) e as entregas de 15-16/11: credenciamento do bot, ações do chat, observabilidade,
+memória entre reuniões, agenda (aguardando credenciais), acesso pela rede local, correções de
+latência do LLM, da corrida chat × resumo, dos participantes e do acompanhamento de etapas.
+A Sprint 11 (servidor com HTTPS) fica para a v1.1.
+
 ## Sprint 11 — Versão 1.0 em produção
 
 **Preparado em 2026-11-15, sem servidor:** `docker-compose.prod.yml` + `deploy/Caddyfile` (S11-2;

@@ -92,6 +92,8 @@ class FakeContainer:
     send_password_reset = Container.send_password_reset
     _title_from_calendar = Container._title_from_calendar
     queue_position = Container.queue_position
+    progress = Container.progress
+    resume = Container.resume
     clear_chat = Container.clear_chat
     bot_status = Container.bot_status
     request_bot_setup = Container.request_bot_setup
@@ -398,8 +400,8 @@ def test_detalhe_e_exclusao(with_login):
     with_login.repo.save(Meeting(
         id="m1", title="T", owner_id=user["id"], audio_path=str(audio), transcript_formatted="[00:00] Ana: oi",
         status=MeetingStatus.DONE,
-        chat_history=[{"role": "user", "content": "quem falou?"}, {"role": "assistant", "content": "Ana"}],
     ))
+    with_login.repo.append_chat("m1", [{"role": "user", "content": "quem falou?"}, {"role": "assistant", "content": "Ana"}])
     d = c.get("/meetings/m1", headers=ana).json()
     assert d["transcript"] == "[00:00] Ana: oi" and d["has_audio"] and d["chat_history"][1]["content"] == "Ana"
     assert c.delete("/meetings/m1", headers=ana).status_code == 204
@@ -716,7 +718,8 @@ def test_limpar_conversa_so_do_dono_e_mantem_a_reuniao(with_login):
     ana, ana_user = signup(with_login)
     bia, _ = signup(with_login, email="bia@empresa.com", name="Bia")
     repo.save(Meeting(id="m1", title="Daily", owner_id=ana_user["id"], status=MeetingStatus.DONE,
-                      transcript_text="Ana: oi", chat_history=[{"role": "user", "content": "oi"}]))
+                      transcript_text="Ana: oi"))
+    repo.append_chat("m1", [{"role": "user", "content": "oi"}])
     docs = with_login.container.documents_dir / "m1"
     docs.mkdir(parents=True)
     (docs / "a.pdf").write_bytes(b"%PDF")

@@ -29,11 +29,12 @@ from use_cases.transcribe_meeting import TranscribeMeetingUC
 
 logger = logging.getLogger(__name__)
 
+STALL_S = 90  # etapa sem worker nem fila por mais que isso = travada
 BOT_SETUP_STALE_MIN = 15  # mais que WAIT_HUMAN_S do bot_setup (10 min)
 _ACTIVE = (MeetingStatus.PENDING, MeetingStatus.RECORDING, MeetingStatus.TRANSCRIBING, MeetingStatus.SUMMARIZING)
 _FINAL = (MeetingStatus.DONE, MeetingStatus.ERROR)
 # O que a reunião de quem chegou depois copia da gravação de quem mandou o bot primeiro.
-_SHARED = ("status", "error", "started_at", "audio_path", "transcript_text", "transcript_formatted",
+_SHARED = ("status", "status_at", "error", "started_at", "audio_path", "transcript_text", "transcript_formatted",
            "transcript_raw", "summary", "participants", "duration_minutes", "metrics")
 
 
@@ -253,11 +254,54 @@ class Container:
                  if m.id != target.id and m.queued_at and (m.queue_priority, m.queued_at) < mine]
         return len(ahead) + 1
 
+    def progress(self, meeting: Meeting) -> dict:
+        """Há quanto tempo a etapa atual roda, quanto ela costuma levar e se travou.
+
+        Travou = gravando, transcrevendo ou resumindo, sem worker nenhum com essa reunião
+        (batimento, ADR-019), fora da fila e há mais de STALL_S. Acontece quando um worker morre
+        no meio; antes a tela ficava em "Transcrevendo…" para sempre, sem aviso."""
+        from infrastructure import observability as obs
+        source = self.repository.find_by_id(meeting.source_id) if meeting.source_id else meeting
+        source = source or meeting
+        elapsed = (datetime.now() - source.status_at).total_seconds() if source.status_at else None
+        state = "working"
+        if source.status in (MeetingStatus.RECORDING, MeetingStatus.TRANSCRIBING, MeetingStatus.SUMMARIZING):
+            if source.queue:
+                state = "queued"
+            elif elapsed is not None and elapsed > STALL_S:
+                alive = obs.workers()
+                if alive is not None and not any(
+                        (w.get("task") or {}).get("meeting_id") == source.id for ws in alive.values() for w in ws):
+                    state = "stalled"
+        stage = {MeetingStatus.TRANSCRIBING: "transcribe", MeetingStatus.SUMMARIZING: "summarize"}.get(source.status)
+        typical = None
+        if stage:
+            values = obs.samples().get(f"pipeline_stage_seconds|stage={stage}", [])
+            typical = obs.percentile(values, 50) if len(values) >= 3 else None
+        return {"state": state, "elapsed_s": elapsed, "typical_s": typical}
+
+    def resume(self, meeting: Meeting) -> None:
+        """Retoma uma reunião travada (ver progress) a partir da etapa em que parou."""
+        if meeting.status in (MeetingStatus.RECORDING, MeetingStatus.TRANSCRIBING):
+            audio = Path(meeting.audio_path or "")
+            if meeting.audio_path and audio.exists() and audio.stat().st_size > 0:
+                self.enqueue_processing(meeting.id, meeting.audio_path, meeting.title)
+            else:
+                meeting.status, meeting.error = MeetingStatus.ERROR, "O bot parou de responder e não há áudio gravado."
+                self.repository.save(meeting)
+        elif meeting.status is MeetingStatus.SUMMARIZING:
+            if self._is_collab:
+                self.enqueue(meeting, "llm")
+            else:
+                threading.Thread(target=self.process_meeting.summarize, args=(meeting.id,), daemon=True).start()
+        else:
+            raise ValueError("A reunião não está parada numa etapa.")
+
     def clear_chat(self, meeting: Meeting) -> None:
         """Apaga a conversa da reunião, com os documentos gerados nela e os e-mails não enviados.
         A reunião (resumo, transcrição, tarefas) fica."""
         meeting.chat_history = []
-        self.repository.save(meeting)
+        self.repository.set_chat_history(meeting.id, [])
         shutil.rmtree(self.documents_dir / meeting.id, ignore_errors=True)
 
     def chat_action(self, meeting: Meeting, action_id: str) -> dict:
@@ -284,7 +328,7 @@ class Container:
             logger.info("[%s] e-mail do chat enviado para %d destinatário(s)", meeting.id, len(action["to"]))
         else:
             action["status"] = "canceled"
-        self.repository.save(meeting)
+        self.repository.set_chat_history(meeting.id, meeting.chat_history)
         return action
 
     def document_file(self, meeting: Meeting, action_id: str) -> tuple[Path, dict]:

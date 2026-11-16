@@ -68,6 +68,7 @@ def test_chat_de_reuniao_longa_usa_resumo_e_trechos(tmp_path):
 def test_chat_guarda_a_conversa_na_reuniao(tmp_path):
     repo = JsonMeetingRepository(str(tmp_path))
     llm, m = FakeLLM(), long_meeting(lines=3)
+    repo.save(m)  # em produção a reunião sempre existe antes do chat
     uc = ChatWithMeetingUC(llm, repository=repo)
     uc.execute(ChatWithMeetingInput(meeting=m, question="primeira?"))
     uc.execute(ChatWithMeetingInput(meeting=repo.find_by_id("m1"), question="segunda?"))
@@ -87,7 +88,7 @@ def test_tarefa_concluida_e_medicoes_sobrevivem_a_ida_e_volta(tmp_path):
     assert [t.done for t in back.summary.tasks] == [False, True] and back.metrics == {"transcribe_s": 1.5}
 
 
-def test_ollama_pede_janela_do_tamanho_do_prompt(monkeypatch):
+def test_ollama_usa_sempre_a_mesma_janela(monkeypatch):
     from types import SimpleNamespace
     from infrastructure.llm.meeting_agent import MeetingAgent
     from infrastructure.llm.model_client import ModelClient
@@ -100,13 +101,14 @@ def test_ollama_pede_janela_do_tamanho_do_prompt(monkeypatch):
     import requests
     monkeypatch.setattr(requests, "post", lambda url, json, timeout: sent.append(json) or Resp())
     cfg = SimpleNamespace(llm_provider="ollama", openai_api_key="", ollama_num_ctx_max=32768,
-                          ollama_model="m", ollama_base_url="http://h:11434/v1")
+                          ollama_model="m", ollama_base_url="http://h:11434/v1", ollama_keep_alive="30m")
     svc = MeetingAgent(model=ModelClient(cfg), contract="")
     assert svc.chat("oi?", context="x" * 30000, history=[{"role": "user", "content": "antes"}]).answer == "ok"
-    assert sent[0]["options"]["num_ctx"] == 16384 and "format" not in sent[0]
+    # Pedido grande e pequeno com a mesma janela: trocar de janela faz o Ollama recarregar (ADR-021).
+    assert sent[0]["options"]["num_ctx"] == 32768 and "format" not in sent[0] and sent[0]["keep_alive"] == "30m"
     assert [m["role"] for m in sent[0]["messages"]] == ["system", "user", "user"]
     svc.chat("oi?", context="curto", history=[])
-    assert sent[1]["options"]["num_ctx"] == 4096
+    assert sent[1]["options"]["num_ctx"] == 32768
 
     import pytest
     from domain.interfaces.llm_service import LLMServiceError

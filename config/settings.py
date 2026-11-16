@@ -78,7 +78,10 @@ class Settings(BaseSettings):
 
     # Ollama (local)
     # Teto da janela pedida ao Ollama; o padrão dele (4096) corta reuniões em silêncio.
+    # Janela de contexto do Ollama, a mesma em todo pedido (ADR-021): trocar de janela recarrega
+    # o modelo (~50 s). 32k cobre chat e resumo de reunião longa; ~7 GB com qwen2.5:7b.
     ollama_num_ctx_max: int = 32768
+    ollama_keep_alive: str = "30m"     # quanto tempo o modelo fica carregado sem uso
     ollama_base_url: str = "http://localhost:11434/v1"
     ollama_model: str = "nemotron-mini"
 

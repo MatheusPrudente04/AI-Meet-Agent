@@ -501,6 +501,36 @@
             "title": "Queue Position",
             "type": "integer"
           },
+          "stage_elapsed_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Só em /status: segundos desde que a etapa atual começou",
+            "title": "Stage Elapsed S"
+          },
+          "stage_typical_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Só em /status: quanto essa etapa costuma levar (mediana)",
+            "title": "Stage Typical S"
+          },
+          "stalled": {
+            "default": false,
+            "description": "Só em /status: a etapa parou (nenhum worker com a reunião, fora da fila); retome com POST /meetings/{id}/resume",
+            "title": "Stalled",
+            "type": "boolean"
+          },
           "started_at": {
             "format": "date-time",
             "title": "Started At",
@@ -590,6 +620,36 @@
             "description": "Só em GET /meetings/{id}/status: posição na fila da etapa atual (1 = é a próxima; 0 = não está esperando)",
             "title": "Queue Position",
             "type": "integer"
+          },
+          "stage_elapsed_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Só em /status: segundos desde que a etapa atual começou",
+            "title": "Stage Elapsed S"
+          },
+          "stage_typical_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Só em /status: quanto essa etapa costuma levar (mediana)",
+            "title": "Stage Typical S"
+          },
+          "stalled": {
+            "default": false,
+            "description": "Só em /status: a etapa parou (nenhum worker com a reunião, fora da fila); retome com POST /meetings/{id}/resume",
+            "title": "Stalled",
+            "type": "boolean"
           },
           "started_at": {
             "format": "date-time",
@@ -2535,6 +2595,63 @@
           }
         ],
         "summary": "Reprocessa o áudio já gravado",
+        "tags": [
+          "meetings"
+        ]
+      }
+    },
+    "/meetings/{meeting_id}/resume": {
+      "post": {
+        "description": "Para quando /status vier com `stalled: true` (um worker morreu no meio): recomeça a etapa\nem que parou. Seguro de repetir: as etapas são idempotentes.",
+        "operationId": "resume_meetings__meeting_id__resume_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "meeting_id",
+            "required": true,
+            "schema": {
+              "title": "Meeting Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Reunião não existe ou é de outro usuário"
+          },
+          "409": {
+            "description": "A reunião não está parada numa etapa"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Retoma uma reunião travada",
         "tags": [
           "meetings"
         ]

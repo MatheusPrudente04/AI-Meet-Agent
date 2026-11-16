@@ -1,7 +1,8 @@
 """Chamada ao modelo de linguagem, sem LangChain (ADR-014).
 
-- Ollama: API nativa, com `num_ctx` do tamanho do prompt (ADR-010). Sem ele o
-  Ollama corta o prompt em 4096 tokens sem avisar.
+- Ollama: API nativa, com `num_ctx` explícito (sem ele o Ollama corta o prompt em 4096 tokens
+  sem avisar, ADR-010) e SEMPRE O MESMO: trocar a janela entre pedidos faz o Ollama recarregar o
+  modelo e reler o prompt inteiro (medido: 47-52 s contra 2-3 s com o prompt em cache, ADR-021).
 - OpenAI e OpenRouter: SDK oficial `openai` (OpenRouter fala o mesmo protocolo).
 """
 from __future__ import annotations
@@ -16,7 +17,6 @@ from domain.interfaces.llm_service import LLMServiceError
 from infrastructure.observability import timed
 
 NUM_PREDICT = 2000
-_CTX_STEPS = (4096, 8192, 16384, 32768, 65536, 131072)
 
 
 class ModelClient:
@@ -77,12 +77,14 @@ class ModelClient:
                 f"Contexto de ~{needed} tokens excede o limite configurado "
                 f"({self._s.ollama_num_ctx_max}). Reduza LLM_CONTEXT_CHARS ou aumente OLLAMA_NUM_CTX_MAX."
             )
-        # Degraus fixos: o modelo não é recarregado a cada pedido.
-        num_ctx = next(c for c in _CTX_STEPS if c >= needed)
+        # Janela fixa: o contrato (início do prompt, igual em todo pedido) fica no cache do Ollama.
+        num_ctx = self._s.ollama_num_ctx_max
         payload = {
             "model": self._s.ollama_model,
             "messages": messages,
             "stream": False,
+            # Modelo carregado entre perguntas espaçadas (o padrão do Ollama descarrega em 5 min).
+            "keep_alive": self._s.ollama_keep_alive,
             "options": {"num_predict": NUM_PREDICT, "temperature": 0.1, "num_ctx": num_ctx},
         }
         if as_json:
