@@ -1,6 +1,7 @@
 import logging
 import smtplib
 import ssl
+from email.mime.application import MIMEApplication
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
@@ -95,19 +96,22 @@ class EmailSender:
         )
         return self._send(to_email, "Meet Agent — código para nova senha", body, kind="password_reset")
 
-    def send_message(self, to: list[str], subject: str, body: str) -> bool:
-        """E-mail livre (ferramenta send_email do chat), um envio por destinatário."""
+    def send_message(self, to: list[str], subject: str, body: str,
+                     attachments: list[tuple[str, bytes]] | None = None) -> bool:
+        """E-mail livre (ferramenta send_email do chat), um envio por destinatário.
+        `attachments`: (nome do arquivo, conteúdo)."""
         for address in to:
-            self._send(address, subject, body, kind="chat")
+            self._send(address, subject, body, kind="chat", attachments=attachments)
         return True
 
     def send_alert(self, to_email: str, subject: str, body: str) -> bool:
         return self._send(to_email, f"Meet Agent — {subject}", body, kind="alert")
 
-    def _send(self, to_email: str, subject: str, content: str, kind: str = "other") -> bool:
+    def _send(self, to_email: str, subject: str, content: str, kind: str = "other",
+              attachments: list[tuple[str, bytes]] | None = None) -> bool:
         from infrastructure import observability as obs
         try:
-            result = self._deliver(to_email, subject, content)
+            result = self._deliver(to_email, subject, content, attachments)
         except Exception as exc:
             obs.incr("emails_total", {"kind": kind, "result": "error"})
             logger.warning("E-mail (%s) para %s falhou: %s", kind, to_email, exc)
@@ -117,7 +121,8 @@ class EmailSender:
         logger.info("E-mail (%s) enviado para %s: %s", kind, to_email, subject[:120])
         return result
 
-    def _deliver(self, to_email: str, subject: str, content: str) -> bool:
+    def _deliver(self, to_email: str, subject: str, content: str,
+                 attachments: list[tuple[str, bytes]] | None = None) -> bool:
         settings = self._settings
         if not settings.email_enabled:
             raise RuntimeError("SMTP não configurado. Preencha SMTP_USER e SMTP_PASSWORD no .env")
@@ -128,6 +133,10 @@ class EmailSender:
         msg["Subject"] = subject
 
         msg.attach(MIMEText(content, "plain", "utf-8"))
+        for filename, data in attachments or []:
+            part = MIMEApplication(data, Name=filename)
+            part.add_header("Content-Disposition", "attachment", filename=filename)
+            msg.attach(part)
 
         try:
             with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20) as server:

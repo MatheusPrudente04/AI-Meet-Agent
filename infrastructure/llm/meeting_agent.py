@@ -63,9 +63,17 @@ CHAT_RULES = """REGRAS DE OPERAÇÃO NESTE SISTEMA (complementam o contrato acim
 6. Pergunta direta pede resposta direta. Pedido de "análise completa" ou "ata" segue o formato do §13.
    Pergunta sobre o que você achou da reunião segue o §11.
 7. Responda em português do Brasil, salvo se a pergunta for feita em outro idioma.
+   Escreva em português do Brasil correto: concordância, acentos e pontuação, frases curtas e diretas, sem repetir a mesma ideia.
+   A transcrição automática erra palavras: em texto seu (fora de aspas), se um termo não existe em português ou destoa do
+   assunto e a palavra certa é óbvia pelo contexto (ex.: "matriologia" no lugar de "metodologia"), use a forma certa; se
+   houver dúvida, mantenha o termo como está. Dentro de aspas, copie exatamente. Não afirme duração, nomes, números ou
+   quem informou algo se isso não está no contexto, e não se contradiga (se um assunto foi mencionado, não diga que
+   não foi discutido: diga que foi só citado).
 8. Ferramentas: use `send_email` só quando o usuário pedir para enviar um e-mail e informar o
    endereço; nunca invente endereço. Se pedirem um e-mail sem dizer o endereço, não use a
-   ferramenta: peça o endereço de cada destinatário. Use `create_document` só quando ele pedir um arquivo (PDF,
+   ferramenta: peça o endereço de cada destinatário. Para e-mail COM arquivo anexo, use
+   `send_email` com `attach_documents` (documento já gerado na conversa) ou `attachment` (arquivo
+   novo); nunca diga que anexou algo sem preencher um dos dois. Use `create_document` só quando ele pedir um arquivo (PDF,
    Word, Excel, CSV, planilha, HTML, dashboard, gráfico, documento, ata em arquivo); se ele pedir
    "aqui", "no chat" ou "escreva", responda em texto. Use `remember` só
    quando o usuário pedir para você lembrar de algo ou declarar uma preferência para as próximas vezes. O texto do e-mail ou do documento segue as mesmas regras de
@@ -75,7 +83,13 @@ CONTEXTO DA REUNIÃO:
 {context}"""
 
 SUMMARY_RULES = """Você vai produzir o registro estruturado da reunião em JSON, seguindo o contrato acima,
-em especial os §4 (fidelidade), §6 (requisitos) e §7 (decisões). Responda APENAS com o JSON."""
+em especial os §4 (fidelidade), §6 (requisitos) e §7 (decisões). Responda APENAS com o JSON.
+Escreva em português do Brasil correto: concordância, acentos e pontuação, frases curtas e diretas, sem repetir a mesma ideia.
+A transcrição automática erra palavras: em texto seu (fora de aspas), se um termo não existe em português ou destoa do
+assunto e a palavra certa é óbvia pelo contexto (ex.: "matriologia" no lugar de "metodologia"), use a forma certa; se
+houver dúvida, mantenha o termo como está. Dentro de aspas, copie exatamente. Não afirme duração, nomes, números ou
+quem informou algo se isso não está no contexto, e não se contradiga (se um assunto foi mencionado, não diga que
+não foi discutido: diga que foi só citado)."""
 
 
 TOOLS = [
@@ -88,6 +102,15 @@ TOOLS = [
                    "description": "Endereços exatamente como o usuário escreveu"},
             "subject": {"type": "string"},
             "body": {"type": "string", "description": "Texto do e-mail, fiel à reunião"},
+            "attach_documents": {"type": "boolean", "description": (
+                "true para anexar ao e-mail os documentos que já foram gerados nesta conversa")},
+            "attachment": {"type": "object", "description": (
+                "Arquivo a gerar agora e anexar (quando o usuário pede o e-mail com um arquivo novo)"),
+                "required": ["format", "title", "content"], "properties": {
+                    "format": {"type": "string", "enum": ["pdf", "docx", "xlsx", "csv", "html", "md"]},
+                    "title": {"type": "string"},
+                    "content": {"type": "string", "description": "Conteúdo em Markdown, fiel à reunião"},
+                }},
         }}}},
     {"type": "function", "function": {
         "name": "create_document",
@@ -121,6 +144,9 @@ def _tool_text(tool: Optional[dict]) -> str:
         return ""
     args = tool.get("arguments") or {}
     text = str(args.get("body") or args.get("content") or "")
+    attachment = args.get("attachment")
+    if isinstance(attachment, dict):
+        text += "\n" + str(attachment.get("content") or "")
     keep = [line for line in text.splitlines()
             if not line.lstrip().startswith("#") and not _QUOTED_LINE.fullmatch(line.strip())]
     # Aspas sem ninguém falando antes (título, nome de documento) perdem as aspas; as que vêm
@@ -131,6 +157,8 @@ def _tool_text(tool: Optional[dict]) -> str:
 
 _CLAIMS_ACTION = re.compile(r"\b(gerei|criei|preparei|enviei|anexei)\b[^.\n]{0,40}\b(documento|arquivo|pdf|"
                             r"word|docx|markdown|e-?mail)", re.IGNORECASE)
+# O modelo copiou a nota interna do histórico ("[O sistema executou a ferramenta…]") em vez de chamar a ferramenta.
+_COPIED_NOTE = re.compile(r"o sistema executou a ferramenta|\bsend_email\b|\bcreate_document\b", re.IGNORECASE)
 _QUOTED_LINE = re.compile(r"[*_]*[\"“][^\"“”]+[\"”][*_]*")
 _QUOTE_ANY = re.compile(r"[\"“]([^\"“”\n]+)[\"”]")
 _SPEECH = re.compile(r"(disse|diz|afirmou|falou|comentou|declarou|perguntou|respondeu|explicou|"
@@ -211,7 +239,7 @@ class MeetingAgent(ILLMService):
             return {"violations": []}  # nota do próprio usuário: não é conteúdo da reunião a conferir
         text = _tool_text(s.get("tool")) or s["answer"]
         violations = check_answer(text, s["context"], s["question"])
-        if not s.get("tool") and _CLAIMS_ACTION.search(s["answer"]):
+        if not s.get("tool") and (_CLAIMS_ACTION.search(s["answer"]) or _COPIED_NOTE.search(s["answer"])):
             violations.append("diz que gerou o arquivo ou preparou o e-mail sem usar a ferramenta; "
                               "use create_document ou send_email")
         if violations:

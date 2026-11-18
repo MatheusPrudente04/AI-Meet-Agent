@@ -292,6 +292,8 @@ def render_chat_action(meeting, action: dict) -> None:
         return
     with st.container(border=True):
         st.markdown(f"**Para:** {', '.join(action['to'])}  \n**Assunto:** {action['subject']}")
+        if action.get("attachments"):
+            st.markdown("**Anexos:** " + ", ".join(f"📎 {a['filename']}" for a in action["attachments"]))
         st.text(action["body"])
         col_send, col_drop, _ = st.columns([1, 1, 3])
         for col, label, send in ((col_send, "📧 Enviar", True), (col_drop, "Descartar", False)):

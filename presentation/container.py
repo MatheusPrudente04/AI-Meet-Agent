@@ -323,7 +323,15 @@ class Container:
             if not get_settings().email_enabled:
                 raise RuntimeError("Envio de e-mail indisponível: o SMTP não está configurado.")
             from infrastructure.email.email_sender import EmailSender
-            EmailSender().send_message(action["to"], action["subject"], action["body"])
+            from use_cases.chat_with_meeting import document_path
+            files = []
+            for att in action.get("attachments") or []:
+                path = document_path(self.documents_dir, meeting.id, att["id"], att["format"])
+                if not path.exists():  # nunca mandar o e-mail sem o anexo prometido
+                    raise RuntimeError(f"O anexo {att['filename']} não está mais disponível. "
+                                       "Descarte este e-mail e peça o documento de novo.")
+                files.append((att["filename"], path.read_bytes()))
+            EmailSender().send_message(action["to"], action["subject"], action["body"], files)
             action["status"], action["sent_at"] = "sent", datetime.now().isoformat(timespec="seconds")
             logger.info("[%s] e-mail do chat enviado para %d destinatário(s)", meeting.id, len(action["to"]))
         else:

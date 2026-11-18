@@ -27,6 +27,12 @@ class SummarySchema(BaseModel):
     decisions: list[DecisionSchema]
 
 
+class AttachmentSchema(BaseModel):
+    id: str
+    format: str
+    filename: str
+
+
 class ChatActionSchema(BaseModel):
     """Ação que o agente preparou no chat. E-mail: `pending` até POST .../send ou .../cancel.
     Documento: `created`, baixar em GET .../document. Memória: nota guardada (`title` = a nota),
@@ -41,6 +47,7 @@ class ChatActionSchema(BaseModel):
     title: str = ""
     filename: str = ""
     sent_at: str = ""
+    attachments: list[AttachmentSchema] = Field([], description="Arquivos anexados ao e-mail")
 
 
 class ChatMessage(BaseModel):

@@ -9,6 +9,7 @@ from domain.interfaces.llm_service import ChatReply, ILLMService, LLMServiceErro
 from use_cases.llm_context import select_relevant
 from use_cases.meeting_memory import build_memory, new_note
 
+_WANTS_ATTACHMENT = re.compile(r"anex|attach|em arquivo|\bpdf\b|\bword\b|docx|xlsx|excel|planilha|csv", re.IGNORECASE)
 _EMAIL = re.compile(r"[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+")
 DOCUMENT_FORMATS = ("pdf", "docx", "xlsx", "csv", "html", "md")
 _FORMAT_ALIASES = {"word": "docx", "doc": "docx", "markdown": "md", "excel": "xlsx", "xls": "xlsx",
@@ -111,32 +112,28 @@ class ChatWithMeetingUC:
             body = str(args.get("body") or "").strip()
             if not body:
                 return "Não consegui montar o texto do e-mail. Diga o que ele deve conter.", None
+            attachments, problem = self._email_attachments(meeting, args)
+            if problem:
+                return problem, None
             action = {"id": action_id, "type": "email", "status": "pending", "to": to,
-                      "subject": subject, "body": body[:20000]}
-            return (f"Preparei o e-mail para {', '.join(to)}. Confira o texto abaixo e confirme o envio; "
-                    "nada é enviado antes disso."), action
+                      "subject": subject, "body": body[:20000], "attachments": attachments}
+            # Pediu arquivo mas nada foi anexado: avisa, em vez de parecer que foi.
+            note = ""
+            if not attachments and _WANTS_ATTACHMENT.search(user_texts[0]):
+                note = (" ⚠️ Nenhum arquivo foi anexado: ainda não há documento gerado nesta conversa. "
+                        "Peça o documento (ex.: \"gere a ata em PDF\") e depois o envio com anexo.")
+            files = f" Anexos: {', '.join(a['filename'] for a in attachments)}." if attachments else ""
+            return (f"Preparei o e-mail para {', '.join(to)}.{files} Confira o texto abaixo e confirme o envio; "
+                    f"nada é enviado antes disso.{note}"), action
 
         if tool.get("name") == "create_document":
             if self._documents_dir is None or self._write_document is None:
                 return "A geração de documentos não está disponível neste ambiente.", None
-            fmt = str(args.get("format") or "pdf").lower().lstrip(".")
-            fmt = _FORMAT_ALIASES.get(fmt, fmt)
-            if fmt not in DOCUMENT_FORMATS:
-                return (f"Formato {fmt} não suportado. Posso gerar PDF, Word (docx), Excel (xlsx), CSV, "
-                        "HTML (com gráficos) ou Markdown."), None
-            title = str(args.get("title") or meeting.title or "Documento da reunião")[:150]
-            content = str(args.get("content") or "").strip()
-            if not content:
-                return "Não consegui montar o conteúdo do documento. Diga o que ele deve conter.", None
-            # Dashboard sem nenhuma tabela (o modelo escreveu só prosa): o sistema põe os números
-            # que ele mesmo contou, para a página ter gráfico e com o número certo.
-            extra = meeting_stats(meeting) if fmt == "html" else []
-            self._write_document(document_path(self._documents_dir, meeting.id, action_id, fmt), fmt, title, content,
-                                 **({"fallback_tables": extra} if extra else {}))
-            slug = re.sub(r"[^\w-]+", "-", title.lower()).strip("-")[:60] or "documento"
-            action = {"id": action_id, "type": "document", "status": "created", "format": fmt,
-                      "title": title, "filename": f"{slug}.{fmt}"}
-            return f"Gerei o documento {title} ({fmt.upper()}). Baixe pelo botão abaixo.", action
+            doc, problem = self._make_document(meeting, args, action_id)
+            if problem:
+                return problem, None
+            action = {"id": action_id, "type": "document", "status": "created", **doc}
+            return f"Gerei o documento {doc['title']} ({doc['format'].upper()}). Baixe pelo botão abaixo.", action
 
         if tool.get("name") == "remember":
             if self._memory is None:
@@ -150,6 +147,47 @@ class ChatWithMeetingUC:
                 {"id": note["_id"], "type": "memory", "status": "created", "title": note["text"]}
 
         return "Não sei executar essa ação.", None
+
+    def _make_document(self, meeting: Meeting, args: dict, doc_id: str) -> tuple[Optional[dict], str]:
+        """Gera o arquivo (format, title, content em `args`). Devolve ({format, title, filename}, "")
+        ou (None, motivo para mostrar ao usuário)."""
+        fmt = str(args.get("format") or "pdf").lower().lstrip(".")
+        fmt = _FORMAT_ALIASES.get(fmt, fmt)
+        if fmt not in DOCUMENT_FORMATS:
+            return None, (f"Formato {fmt} não suportado. Posso gerar PDF, Word (docx), Excel (xlsx), CSV, "
+                          "HTML (com gráficos) ou Markdown.")
+        title = str(args.get("title") or meeting.title or "Documento da reunião")[:150]
+        content = str(args.get("content") or "").strip()
+        if not content:
+            return None, "Não consegui montar o conteúdo do documento. Diga o que ele deve conter."
+        # Dashboard sem nenhuma tabela (o modelo escreveu só prosa): o sistema põe os números
+        # que ele mesmo contou, para a página ter gráfico e com o número certo.
+        extra = meeting_stats(meeting) if fmt == "html" else []
+        self._write_document(document_path(self._documents_dir, meeting.id, doc_id, fmt), fmt, title, content,
+                             **({"fallback_tables": extra} if extra else {}))
+        slug = re.sub(r"[^\w-]+", "-", title.lower()).strip("-")[:60] or "documento"
+        return {"format": fmt, "title": title, "filename": f"{slug}.{fmt}"}, ""
+
+    def _email_attachments(self, meeting: Meeting, args: dict) -> tuple[list[dict], str]:
+        """Anexos do e-mail: `attachment` gera um arquivo agora; `attach_documents` junta os que o
+        chat já gerou. Cada anexo = {id, format, filename}; o arquivo é lido na hora do envio."""
+        found: list[dict] = []
+        new = args.get("attachment")
+        if isinstance(new, dict) and new:
+            if self._documents_dir is None or self._write_document is None:
+                return [], "A geração de documentos não está disponível neste ambiente."
+            doc_id = uuid.uuid4().hex[:12]
+            doc, problem = self._make_document(meeting, new, doc_id)
+            if problem:
+                return [], problem
+            found.append({"id": doc_id, "format": doc["format"], "filename": doc["filename"]})
+        if args.get("attach_documents") and self._documents_dir is not None:
+            for msg in meeting.chat_history:
+                a = msg.get("action") or {}
+                if a.get("type") == "document" and document_path(
+                        self._documents_dir, meeting.id, a["id"], a.get("format", "")).exists():
+                    found.append({"id": a["id"], "format": a["format"], "filename": a["filename"]})
+        return found, ""
 
     def _context(self, meeting: Meeting, question: str) -> str:
         # A reunião aberta diz o próprio título e data: sem isso, com registros de outras reuniões

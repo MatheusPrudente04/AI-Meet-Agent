@@ -67,8 +67,8 @@ def _container(env, monkeypatch, sent):
     monkeypatch.setattr(container_mod, "get_settings", lambda: SimpleNamespace(email_enabled=True))
 
     class FakeSender:
-        def send_message(self, to, subject, body):
-            sent.append((to, subject, body))
+        def send_message(self, to, subject, body, attachments=None):
+            sent.append((to, subject, body, attachments))
     monkeypatch.setattr(email_mod, "EmailSender", FakeSender)
     return c
 
@@ -79,7 +79,7 @@ def test_email_so_sai_com_confirmacao_e_uma_vez(env, monkeypatch):
     c = _container(env, monkeypatch, sent)
     assert sent == []  # preparar não envia
     action = c.resolve_email_action(m, out.action["id"], send=True)
-    assert action["status"] == "sent" and sent == [(["ana@empresa.com"], "Daily", "A entrega ficou para sexta.")]
+    assert action["status"] == "sent" and sent == [(["ana@empresa.com"], "Daily", "A entrega ficou para sexta.", [])]
     with pytest.raises(ValueError):
         c.resolve_email_action(env.repo.find_by_id("m1"), out.action["id"], send=True)
     assert len(sent) == 1
@@ -170,3 +170,61 @@ def test_resumo_e_conversa_nao_se_apagam(env):
     worker_copy.error = "nada"                  # nova gravação do pipeline com cópia sem a conversa
     repo.save(worker_copy)
     assert len(repo.find_by_id("m1").chat_history) == 2  # o pipeline não apagou a conversa
+
+
+def test_email_com_arquivo_novo_sai_com_anexo(env, monkeypatch):
+    tool = email(["ana@empresa.com"])
+    tool["arguments"]["attachment"] = {"format": "pdf", "title": "Ata", "content": "## Decisões\n- Entrega na sexta"}
+    out, m = env.ask("Mande a ata em PDF para ana@empresa.com", tool)
+    assert [a["filename"] for a in out.action["attachments"]] == ["ata.pdf"]
+    sent = []
+    _container(env, monkeypatch, sent).resolve_email_action(m, out.action["id"], send=True)
+    (_, _, _, files), = sent
+    assert files[0][0] == "ata.pdf" and files[0][1].startswith(b"%PDF")
+
+
+def test_email_anexa_documento_ja_gerado(env, monkeypatch):
+    doc = {"name": "create_document", "arguments": {"format": "md", "title": "Ata", "content": "## Decisões\n- ok"}}
+    _, m = env.ask("Gere a ata em markdown", doc)
+    tool = email(["ana@empresa.com"])
+    tool["arguments"]["attach_documents"] = True
+    out, m = env.ask("Mande o arquivo para ana@empresa.com", tool)
+    assert [a["filename"] for a in out.action["attachments"]] == ["ata.md"]
+
+
+def test_pediu_anexo_sem_arquivo_avisa_em_vez_de_fingir(env):
+    out, _ = env.ask("Mande o PDF para ana@empresa.com", email(["ana@empresa.com"]))
+    assert out.action["attachments"] == [] and "Nenhum arquivo foi anexado" in out.answer
+
+
+def test_anexo_sumiu_nao_envia_so_o_texto(env, monkeypatch):
+    tool = email(["ana@empresa.com"])
+    tool["arguments"]["attachment"] = {"format": "md", "title": "Ata", "content": "## Decisões\n- ok"}
+    out, m = env.ask("Mande para ana@empresa.com", tool)
+    for f in (env.docs / "m1").iterdir():
+        f.unlink()
+    sent = []
+    with pytest.raises(RuntimeError, match="anexo"):
+        _container(env, monkeypatch, sent).resolve_email_action(m, out.action["id"], send=True)
+    assert sent == [] and env.repo.find_by_id("m1").chat_history[-1]["action"]["status"] == "pending"
+
+
+def test_smtp_recebe_o_anexo_na_mensagem(monkeypatch):
+    import smtplib
+    from infrastructure.email.email_sender import EmailSender
+    got = {}
+
+    class FakeSMTP:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def starttls(self, **k): pass
+        def auth(self, *a): pass
+        def auth_plain(self, *a): pass
+        def sendmail(self, frm, to, msg): got["msg"] = msg
+    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+    sender = EmailSender()
+    sender._settings = SimpleNamespace(email_enabled=True, smtp_user="a@b.com", smtp_password="x", smtp_from_email="",
+                                       smtp_host="h", smtp_port=587)
+    sender.send_message(["ana@empresa.com"], "Ata", "texto", [("ata.pdf", b"%PDF-1")])
+    assert 'filename="ata.pdf"' in got["msg"] and "Content-Disposition: attachment" in got["msg"]

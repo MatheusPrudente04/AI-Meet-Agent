@@ -1,6 +1,29 @@
 {
   "components": {
     "schemas": {
+      "AttachmentSchema": {
+        "properties": {
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "format": {
+            "title": "Format",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "format",
+          "filename"
+        ],
+        "title": "AttachmentSchema",
+        "type": "object"
+      },
       "Body_upload_meeting_meetings_upload_post": {
         "properties": {
           "file": {
@@ -116,6 +139,15 @@
       "ChatActionSchema": {
         "description": "Ação que o agente preparou no chat. E-mail: `pending` até POST .../send ou .../cancel.\nDocumento: `created`, baixar em GET .../document. Memória: nota guardada (`title` = a nota),\nver e apagar em /memory.",
         "properties": {
+          "attachments": {
+            "default": [],
+            "description": "Arquivos anexados ao e-mail",
+            "items": {
+              "$ref": "#/components/schemas/AttachmentSchema"
+            },
+            "title": "Attachments",
+            "type": "array"
+          },
           "body": {
             "default": "",
             "title": "Body",

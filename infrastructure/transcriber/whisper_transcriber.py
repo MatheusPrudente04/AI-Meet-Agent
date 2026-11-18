@@ -300,8 +300,9 @@ class WhisperLocalTranscriber(ITranscriber):
         return (
             "Reunião de trabalho em português do Brasil. "
             "Termos frequentes: Power BI, DAX, dashboard, faturamento, "
-            "inadimplência, Streamlit, FastAPI, deploy, sprint, backlog."
-        )
+            "inadimplência, Streamlit, FastAPI, deploy, sprint, backlog, Kanban, metodologia, "
+            "bot, GitHub, issues, tasks, roadmap, " + (get_settings().whisper_vocabulary or "")
+        ).rstrip(", ") + "."
 
     def _validate_file(self, audio_path: str) -> None:
         path = Path(audio_path)

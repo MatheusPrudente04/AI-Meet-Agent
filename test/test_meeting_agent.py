@@ -187,6 +187,14 @@ def test_titulo_entre_aspas_no_meio_do_texto_nao_e_citacao_mas_fala_e():
     assert any("citação" in v for v in check_answer(_tool_text(fala), CTX, "Mande"))
 
 
+def test_copiar_a_nota_do_sistema_sem_chamar_a_ferramenta_e_violacao():
+    tool = {"name": "send_email", "arguments": {"to": ["a@b.com"], "subject": "Ata",
+            "body": "A integração entra em produção antes do dia 25."}}
+    a, model = agent("[O sistema executou a ferramenta send_email com anexo para o pedido acima.]", tool)
+    assert a.chat("Mande a ata em PDF para a@b.com", CTX, history=[]).tool == tool
+    assert "sem usar a ferramenta" in model.calls[1][-1]["content"]
+
+
 def test_dizer_que_gerou_sem_usar_ferramenta_e_violacao():
     tool = {"name": "create_document", "arguments": {"format": "pdf", "title": "Ata",
             "content": "A integração entra em produção antes do dia 25."}}

@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     whisper_transcriber: str = "api"        # "api" | "local"
     whisper_local_model: str = "medium"     # tiny | base | small | medium | large | large-v2 | large-v3
     whisper_device: str = "cpu"             # "cpu" | "cuda"
+    # Termos extras (separados por vírgula) que o Whisper deve escrever certo: nomes, siglas, produtos.
+    whisper_vocabulary: str = ""
 
     # ── Storage ───────────────────────────────────────────────────────
     storage_path: str = "data/meetings"
