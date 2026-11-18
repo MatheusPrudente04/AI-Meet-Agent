@@ -9,7 +9,7 @@ Decisões de arquitetura: [docs/adr/README.md](docs/adr/README.md). Roteiro: [do
 ## Como funciona
 
 ```
-Streamlit / API ──► fila "bot" ──► worker do bot (host) ──► Chromium entra no Meet
+Streamlit / API ──► fila "bot" ──► container do bot ──► Chromium entra no Meet
                                         │  áudio em chunks ──► API /capture ──► data/audio/<id>.webm
                                         │  legendas e presentes ──► data/audio/<id>.speakers.jsonl
                                         ▼
@@ -35,41 +35,37 @@ Streamlit / API ──► fila "bot" ──► worker do bot (host) ──► Ch
 
 ## Subir o ambiente (produção local)
 
-Pré-requisitos: Docker Desktop, Python 3.11, [Ollama](https://ollama.com) com o modelo configurado
-(`ollama pull qwen2.5:7b`).
+Tudo roda em containers (ADR-016): API, interface, workers, MongoDB, Redis e o **bot**
+(Chromium com tela virtual e som virtual, login da conta do Google num volume). Não precisa de
+Python, Playwright nem Chromium no host.
+
+Pré-requisitos: Docker Desktop e [Ollama](https://ollama.com) no host com o modelo configurado
+(`ollama pull qwen2.5:7b`). Confira `df -h`: o build das duas imagens precisa de espaço livre.
 
 ```bash
-cp .env.example .env            # preencha; API_KEY é obrigatória (comando para gerar está no arquivo)
+cp .env.example .env     # preencha; API_KEY é obrigatória (comando para gerar está no arquivo)
 
-# 1. Serviços: api :8001, streamlit :8501, redis :6380, mongo :27018
-docker compose up -d --build
-
-# 2. Ambiente do bot, no host (ele usa o Chromium e o login do Google desta máquina)
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt -r requirements-dev.txt
-playwright install chromium
-python -m infrastructure.recorder.bot_setup     # uma vez: login manual da conta do bot
-
-# 3. Worker do bot, no host (deixe rodando)
-python main.py --bot-worker
+# Sobe api :8001, streamlit :8501, workers, redis :6380, mongo :27018 e o bot (noVNC :6080)
+docker compose --profile bot up -d --build --remove-orphans
 ```
 
-Abra http://localhost:8501, crie sua conta (a primeira conta herda as reuniões que já existiam),
-cole o link da reunião e envie o bot. Quem organiza a reunião precisa
-**admitir** o bot quando ele pedir para entrar. A tela acompanha o andamento sozinha.
+1. Abra http://localhost:8501 e crie sua conta (a primeira é a de administrador e herda as
+   reuniões que já existiam).
+2. Na tela **Enviar bot**, clique em **🤖 Credenciar bot**. Com `BOT_GOOGLE_EMAIL` e
+   `BOT_GOOGLE_PASSWORD` no `.env` ele tenta entrar sozinho; sem eles, ou se o Google pedir
+   verificação, a tela do navegador do bot aparece na própria página (noVNC) para você concluir
+   o login. Ao terminar: "✅ Bot credenciado". O login fica salvo no volume `bot_profile`.
+3. Cole o link da reunião e envie o bot. Quem organiza a reunião precisa **admitir** o bot quando
+   ele pedir para entrar. A tela acompanha o andamento sozinha.
 
-Depois de atualizar o código: `docker compose up -d --build --remove-orphans` e reinicie o worker do bot.
+Depois de atualizar o código: `docker compose --profile bot up -d --build --remove-orphans`.
+Sem `--profile bot` o bot não sobe e o envio fica bloqueado.
 
 **Vários usuários ao mesmo tempo (ADR-015).** Transcrição e resumo têm filas e workers próprios
 (`worker-transcribe`, `worker-llm`); o 1º envio de cada usuário passa na frente do 2º de qualquer
 outro. Mais paralelismo: `docker compose up -d --scale worker-transcribe=2` (cada um carrega o
-Whisper na memória). Para gravar duas reuniões ao mesmo tempo, rode um worker do bot por perfil,
-cada um com seu login (`bot_setup`):
-
-```bash
-BOT_CHROME_PROFILE=./bot_chrome_profile_2 python -m infrastructure.recorder.bot_setup   # uma vez
-BOT_CHROME_PROFILE=./bot_chrome_profile_2 python main.py --bot-worker
-```
+Whisper na memória). O container do bot grava uma reunião por vez; o worker do host
+(modo de desenvolvimento, abaixo) permite um bot por perfil de Chrome.
 
 Teste de carga, sempre contra um banco de rascunho com cadastro aberto:
 `python -m scripts.load_test --api http://localhost:8001 --audio reuniao.wav --uploads 4,1,1`.
@@ -83,39 +79,25 @@ Mongo, Redis e a tela do bot (noVNC, porta 6080) ficam só nesta máquina, porqu
 por isso o **credenciamento do bot** é feito a partir desta máquina. É HTTP sem criptografia;
 fora da rede de casa ou do escritório, use o compose de produção com HTTPS.
 
-### Credenciar o bot (pela interface)
+### O bot em container
 
-Na tela **Enviar bot**, o administrador clica em **🤖 Credenciar bot**. Aparece "Criando bot...";
-se não houver `BOT_GOOGLE_EMAIL`/`BOT_GOOGLE_PASSWORD` no `.env`, ou se o Google pedir
-verificação, a tela do navegador do bot aparece na própria página para concluir o login. Ao
-terminar: "✅ Bot credenciado", e o envio do bot é liberado (Meet, Zoom e Teams). O comando
-`bot_setup` abaixo continua valendo como alternativa.
+O serviço `bot` (perfil `bot` do compose, `Dockerfile.bot`) consome a fila "bot" e guarda o login
+do Google no volume `bot_profile`. Para ver o que ele está vendo durante uma reunião, ou concluir
+um login que o Google pediu: http://localhost:6080/vnc.html (a porta só abre nesta máquina).
 
-### Bot em container (S10-1)
-
-O bot também roda no compose, sem Python nem Playwright no host: Chromium com tela virtual e som
-virtual, e o perfil com o login do Google num volume (`bot_profile`). Até ser validado numa
-reunião real, ele é opcional (perfil `bot`) e convive com o worker do host. **Não rode os dois
-ao mesmo tempo**: os dois pegam tarefas da mesma fila.
+Alternativas ao botão **Credenciar bot** e testes pelo terminal:
 
 ```bash
-docker compose --profile bot build bot
-# 1. Login da conta do bot, uma vez: abra http://localhost:6080/vnc.html, clique em Connect
-#    e entre na conta na janela do Chromium (até 5 min)
+# Login manual, uma vez: abra http://localhost:6080/vnc.html, clique em Connect e entre na conta
 docker compose --profile bot run --rm --service-ports bot python -m infrastructure.recorder.bot_setup
-# 2. Fumaça: alguém cria a reunião e admite o bot
+# Fumaça: alguém cria a reunião e admite o bot
 docker compose --profile bot run --rm --service-ports bot python -m infrastructure.recorder.run_bot --url <link> --smoke 30
-# 3. Worker do bot
-docker compose --profile bot up -d bot
 ```
-
-Para ver o que o bot está vendo durante uma reunião: http://localhost:6080/vnc.html. A porta só
-abre nesta máquina.
 
 ### Windows (Docker Desktop + WSL2)
 
 Tudo que roda no compose funciona igual no Windows: envio de áudio, transcrição, resumo, chat,
-login e backup. O bot roda pelo container (seção acima); falta a primeira reunião real com ele, no macOS e no Windows.
+login e backup. O bot roda pelo container (`--profile bot`); no Windows falta a primeira reunião real.
 
 1. Instale o WSL2 (`wsl --install` no PowerShell como administrador) e o Docker Desktop com o
    backend WSL2 (padrão). Em *Settings → Resources → WSL integration*, ligue a sua distribuição.
@@ -125,7 +107,7 @@ login e backup. O bot roda pelo container (seção acima); falta a primeira reun
    # no terminal do Ubuntu (WSL2)
    cd ~ && git clone <repositório> meet-agent && cd meet-agent
    cp .env.example .env    # preencha
-   docker compose up -d --build
+   docker compose --profile bot up -d --build
    ```
    O `.gitattributes` mantém os arquivos com fim de linha LF mesmo no Windows. Se o repositório
    foi clonado antes dele existir com `core.autocrlf=true` e algum script falhar com `$'\r'`,
@@ -138,9 +120,22 @@ login e backup. O bot roda pelo container (seção acima); falta a primeira reun
 Backup e restauração: `docker compose run --rm backup` e
 `docker compose run --rm backup restore backups/<arquivo>`, no terminal do WSL2 ou no PowerShell.
 
-### Modo de desenvolvimento (sem Docker)
+### Modo de desenvolvimento
 
-Com `APP_MODE=solo` não há fila nem MongoDB: as reuniões ficam em `data/meetings/*.json`.
+**Bot no host** (alternativa ao container, útil para depurar; usa o Chromium e o login desta
+máquina). **Não rode junto com o container do bot**: os dois pegam tarefas da mesma fila.
+
+```bash
+docker compose up -d --build                    # sem --profile bot
+python3.11 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+playwright install chromium
+python -m infrastructure.recorder.bot_setup     # uma vez: login manual da conta do bot
+python main.py --bot-worker                     # deixe rodando
+# um bot por perfil: BOT_CHROME_PROFILE=./bot_chrome_profile_2 (bot_setup e --bot-worker)
+```
+
+**Sem Docker**: com `APP_MODE=solo` não há fila nem MongoDB: as reuniões ficam em `data/meetings/*.json`.
 
 ```bash
 python main.py --api      # API

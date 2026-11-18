@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import streamlit as st
 import streamlit.components.v1 as components
-from config.settings import get_settings
+from config.settings import AppMode, Settings, get_settings
 from config.logging_setup import setup_logging
 from presentation.container import BotNotReady, MeetingInProgress, get_container
 from domain.entities.meeting import Meeting, MeetingStatus, Summary
@@ -34,6 +34,24 @@ def get_app_container():
     return get_container()
 
 container = get_app_container()
+
+
+def switch_mode(target: AppMode) -> str | None:
+    """Troca solo ↔ collab neste processo do Streamlit (vale para todos que o acessam; a API e
+    os workers seguem no modo do compose). Devolve a mensagem de erro, ou None se trocou.
+    ponytail: não persiste; ao reiniciar o Streamlit volta para o APP_MODE do .env."""
+    if target == AppMode.SOLO and not (container.auth is None or (
+            st.session_state.user and st.session_state.user.is_admin)):
+        return "Só o administrador pode mudar para o modo Solo (ele não tem login)."
+    try:
+        Settings(app_mode=target)  # roda a validação do .env (collab exige Mongo, Redis, API_KEY…)
+    except ValueError as exc:
+        return f"Não foi possível mudar para {target.value}: {exc}"
+    settings.app_mode = target
+    get_container.cache_clear()
+    get_app_container.clear()
+    st.session_state.meeting, st.session_state.page = None, "meetings"
+    return None
 
 st.set_page_config(page_title="Meet Agent", page_icon="🎤", layout="wide")
 
@@ -388,6 +406,16 @@ with st.sidebar:
     st.title("🎤 Meet Agent")
     badge = "Solo" if settings.is_solo else "Colaborativo"
     st.caption(f"Modo: **{badge}**")
+    _target = AppMode.COLLAB if settings.is_solo else AppMode.SOLO
+    _can = settings.is_solo or (st.session_state.user and st.session_state.user.is_admin)
+    if st.button(f"🔀 Mudar para {'Colaborativo' if settings.is_solo else 'Solo'}",
+                 use_container_width=True, disabled=not _can,
+                 help=None if _can else "Só o administrador pode mudar para o modo Solo."):
+        _err = switch_mode(_target)
+        if _err:
+            st.error(_err)
+        else:
+            st.rerun()
     if st.session_state.user:
         st.caption(f"👤 {st.session_state.user.name}")
         if st.button("Sair", use_container_width=True):
