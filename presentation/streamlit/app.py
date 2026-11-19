@@ -28,6 +28,7 @@ from use_cases.chat_with_meeting import ChatWithMeetingInput
 settings = get_settings()
 setup_logging(service="streamlit")
 AUDIO_DIR = Path(settings.audio_storage_path)
+LOGO_MARK_PATH = Path(__file__).with_name("assets") / "meet-agent-mark.png"
 
 @st.cache_resource
 def get_app_container():
@@ -53,7 +54,42 @@ def switch_mode(target: AppMode) -> str | None:
     st.session_state.meeting, st.session_state.page = None, "meetings"
     return None
 
-st.set_page_config(page_title="Meet Agent", page_icon="🎤", layout="wide")
+st.set_page_config(page_title="AI Meet Agent", page_icon=str(LOGO_MARK_PATH), layout="wide")
+
+
+def render_app_header() -> None:
+    mode_label = "Colaborativo" if settings.is_collab else "Solo"
+    mode_class = "collaborative" if settings.is_collab else "solo"
+    with st.container(key="ma-theme-toggle"):
+        st.toggle(
+            "🌙" if st.session_state.dark_mode else "☀️",
+            key="dark_mode",
+            on_change=save_theme_preference,
+        )
+    with st.container(border=True, key="ma-topbar"):
+        logo_col, brand_col, mode_col = st.columns(
+            [1, 5.3, 3.4],
+            vertical_alignment="center",
+        )
+        logo_col.image(str(LOGO_MARK_PATH), width=48)
+        brand_col.markdown(
+            """
+            <div class="ma-brand-copy">
+              <strong>AI Meet Agent</strong>
+              <span>REUNIÃO · TRANSCRIÇÃO · IA</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        mode_col.markdown(
+            f"""
+            <div class="ma-mode-pill {mode_class}">
+              <span class="ma-mode-dot" aria-hidden="true"></span>
+              Modo {mode_label}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 _SECTION_EMOJI = {
     "went_well": "✅", "to_improve": "🔧", "action_items": "📌",
@@ -71,6 +107,7 @@ if settings.is_collab:
     _PAGES["👤 Minha conta"] = "account"
 
 def _init():
+    theme_preference = st.query_params.get("theme", "dark")
     defaults = {
         "user": None,
         "token": "",
@@ -78,12 +115,24 @@ def _init():
         "page": "meetings",
         "meeting": None,
         "mode_selected": False,
+        "dark_mode": theme_preference != "light",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
 
+
 _init()
+
+
+def save_theme_preference() -> None:
+    st.query_params["theme"] = "dark" if st.session_state.dark_mode else "light"
+
+
+theme_css = Path(__file__).with_name("theme.css").read_text(encoding="utf-8")
+if st.query_params.get("theme", "dark") == "light":
+    theme_css += "\n" + Path(__file__).with_name("theme-light.css").read_text(encoding="utf-8")
+st.markdown(f"<style>{theme_css}</style>", unsafe_allow_html=True)
 
 
 COOKIE = "meet_agent_session"
@@ -114,6 +163,7 @@ def end_session() -> None:
     st.session_state.token, st.session_state.user, st.session_state.meeting = "", None, None
     st.session_state.cookie = ""
     st.query_params.clear()
+    st.query_params["theme"] = "dark" if st.session_state.dark_mode else "light"
 
 
 def _client_ip() -> str:
@@ -125,7 +175,8 @@ def _client_ip() -> str:
 
 def login_screen() -> None:
     """Entrar, criar conta ou recuperar a senha (ADR-011). Só em collab."""
-    st.title("🎤 Meet Agent")
+    render_app_header()
+    st.title("Acesse sua conta")
     from use_cases.auth import MIN_PASSWORD, AuthError
     tab_login, tab_signup, tab_forgot = st.tabs(["Entrar", "Criar conta", "Esqueci a senha"])
     with tab_login, st.form("login"):
@@ -463,54 +514,57 @@ with st.sidebar:
                 select_meeting(None)
                 st.rerun()
 
+render_app_header()
 
 if st.session_state.page == "meetings":
 
-    st.title("🎤 Meet Agent")
+    st.title("Reuniões")
+    st.caption("Transcreva gravações ou acompanhe reuniões com o Meet Agent.")
 
     if st.session_state.meeting is None:
         active_meetings_panel()
         if settings.is_solo:
-            st.subheader("Nova reunião")
-            title = st.text_input("Título", placeholder="Sprint Planning — Semana 22")
-            audio_file = st.file_uploader(
-                "Arquivo de áudio",
-                type=["wav", "mp3", "m4a", "webm", "mkv", "ogg"],
-            )
-            use_diarization = st.toggle("Identificar speakers", value=True)
+            with st.container(border=True):
+                st.subheader("Nova reunião")
+                title = st.text_input("Título", placeholder="Sprint Planning — Semana 22")
+                audio_file = st.file_uploader(
+                    "Arquivo de áudio",
+                    type=["wav", "mp3", "m4a", "webm", "mkv", "ogg"],
+                )
+                use_diarization = st.toggle("Identificar speakers", value=True)
 
-            if st.button("🚀 Processar", disabled=not (title and audio_file), type="primary"):
-                if not audio_file:
-                    st.error("Selecione um arquivo de áudio")
-                    st.stop()
+                if st.button("🚀 Processar", disabled=not (title and audio_file), type="primary"):
+                    if not audio_file:
+                        st.error("Selecione um arquivo de áudio")
+                        st.stop()
 
-                audio_dir = Path(settings.audio_storage_path)
-                audio_dir.mkdir(parents=True, exist_ok=True)
-                suffix = Path(audio_file.name).suffix
-                audio_path = str(audio_dir / f"{uuid.uuid4()}{suffix}")
-                with open(audio_path, "wb") as f:
-                    f.write(audio_file.read())
+                    audio_dir = Path(settings.audio_storage_path)
+                    audio_dir.mkdir(parents=True, exist_ok=True)
+                    suffix = Path(audio_file.name).suffix
+                    audio_path = str(audio_dir / f"{uuid.uuid4()}{suffix}")
+                    with open(audio_path, "wb") as f:
+                        f.write(audio_file.read())
 
-                with st.spinner("Transcrevendo e gerando resumo..."):
-                    meeting = container.process_meeting.execute(
-                        ProcessMeetingInput(
-                            meeting_id=str(uuid.uuid4()), audio_path=audio_path,
-                            title=title, with_diarization=use_diarization,
+                    with st.spinner("Transcrevendo e gerando resumo..."):
+                        meeting = container.process_meeting.execute(
+                            ProcessMeetingInput(
+                                meeting_id=str(uuid.uuid4()), audio_path=audio_path,
+                                title=title, with_diarization=use_diarization,
+                            )
                         )
-                    )
-                if meeting.status == MeetingStatus.ERROR:
-                    st.error(meeting.error)
-                    st.stop()
+                    if meeting.status == MeetingStatus.ERROR:
+                        st.error(meeting.error)
+                        st.stop()
 
-                select_meeting(meeting)
-                st.rerun()
+                    select_meeting(meeting)
+                    st.rerun()
 
         else:
             st.subheader("Enviar bot para a reunião")
 
             col_form, col_status = st.columns([1, 1], gap="large")
 
-            with col_form:
+            with col_form.container(border=True, key="ma-reflective-card-bot"):
                 st.markdown("### 🤖 Enviar bot")
                 bot_ready = bot_credential_panel()
                 meet_url = st.text_input(
@@ -542,7 +596,7 @@ if st.session_state.page == "meetings":
                         select_meeting(container.meeting_for(new_id, OWNER))
                         st.rerun()
 
-            with col_status:
+            with col_status.container(border=True, key="ma-reflective-card-guide"):
                 if settings.enable_calendar:
                     st.markdown("### 📅 Próximas reuniões da agenda")
                     events, cal_error = container.upcoming_events()
